@@ -1,0 +1,17 @@
+{
+  "name": "pitbox",
+  "description": "Fixed pool of git worktree slots for parallel coding agents, packaged with the integrate skill and the pitbox MCP server for Claude Code",
+  "owner": { "name": "WarLikeLaux", "url": "https://github.com/WarLikeLaux" },
+  "plugins": [
+    {
+      "name": "pitbox",
+      "source": "./plugin",
+      "description": "pitbox slot workflow for Claude Code: MCP tools plus the integrate skill",
+      "version": "0.1.0",
+      "author": { "name": "WarLikeLaux" },
+      "license": "MIT",
+      "keywords": ["mcp", "git", "worktree", "parallel", "agents"],
+      "category": "mcp"
+    }
+  ]
+}

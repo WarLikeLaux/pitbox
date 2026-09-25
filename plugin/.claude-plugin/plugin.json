@@ -1,0 +1,17 @@
+{
+  "name": "pitbox",
+  "displayName": "pitbox",
+  "version": "0.1.0",
+  "description": "Fixed pool of git worktree slots for parallel coding agents: MCP tools with the workflow rules built in, plus the integrate skill for the integrator role.",
+  "author": { "name": "WarLikeLaux", "url": "https://github.com/WarLikeLaux" },
+  "repository": "https://github.com/WarLikeLaux/pitbox",
+  "license": "MIT",
+  "keywords": ["mcp", "git", "worktree", "parallel", "agents"],
+  "mcpServers": {
+    "pitbox": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/server.mjs"]
+    }
+  }
+}

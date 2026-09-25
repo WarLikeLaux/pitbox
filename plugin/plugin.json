@@ -1,0 +1,10 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "pitbox",
+  "version": "0.1.0",
+  "description": "Fixed pool of git worktree slots for parallel coding agents: MCP tools with the workflow rules built in, plus the integrate skill for the integrator role.",
+  "author": { "name": "WarLikeLaux", "url": "https://github.com/WarLikeLaux" },
+  "repository": "https://github.com/WarLikeLaux/pitbox",
+  "license": "MIT",
+  "keywords": ["mcp", "git", "worktree", "parallel", "agents"]
+}

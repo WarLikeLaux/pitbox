@@ -1,0 +1,344 @@
+#!/usr/bin/env bash
+# pitbox: fixed pool of git worktree slots for parallel agent tasks.
+#
+# Global tool, repo-specific behavior lives in .slots/ inside each repository:
+#   .slots/config       shell vars, e.g. MAIN_BRANCH=custom
+#   .slots/setup.sh     called with the slot dir as $1 after worktree add and on release
+#   .slots/release.sh   optional, called with the slot dir as $1 on release
+set -Eeuo pipefail
+
+VERSION="0.1.0"
+
+usage() {
+    cat <<EOF
+pitbox $VERSION: fixed pool of git worktree slots for parallel agent tasks
+
+Usage (run anywhere inside the repository):
+  pitbox init [--stack S] [--force]   Write .slots/ templates for this repo (stacks: bun, php-docker; auto-detected)
+  pitbox setup [N]              Create slot worktrees wt1..wtN (default 3), run .slots/setup.sh in each
+  pitbox status                 Show slots: branch, dirty files, commits ahead of main, readiness
+  pitbox ready <slot> [note]    Mark the slot's task ready (writes TASK_READY.md, refuses dirty or empty slots)
+  pitbox collect <slot|ready>   Merge the slot branch into the main branch (--no-ff)
+  pitbox release <slot>         Reset the slot to main, delete the merged branch, run release hooks
+  pitbox guide                  Print the workflow rules for agents
+  pitbox mcp                    Start the MCP server (needs the mcp/server.mjs from the repository)
+  pitbox version                Print the version
+  pitbox help                   Show this help
+
+Repository configuration (committed alongside the code):
+  .slots/config                shell vars: MAIN_BRANCH=<branch>
+  .slots/setup.sh              install deps in a fresh slot (bun install, composer install, ...)
+  .slots/release.sh            extra cleanup on release (defaults to setup.sh)
+
+Readiness marker: TASK_READY.md in the slot root (add it to a global git ignore once).
+The user's word always overrides the marker.
+EOF
+}
+
+die() { echo "pitbox: $*" >&2; exit 1; }
+
+main_worktree() {
+    git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
+    git worktree list --porcelain | sed -n 's/^worktree //p' | head -1
+}
+
+load_config() {
+    local root="$1"
+    MAIN_BRANCH=""
+    if [[ -f "$root/.slots/config" ]]; then
+        # shellcheck disable=SC1091
+        source "$root/.slots/config"
+    fi
+    if [[ -z "${MAIN_BRANCH}" ]]; then
+        MAIN_BRANCH="$(git -C "$root" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')" || MAIN_BRANCH=""
+    fi
+    if [[ -z "${MAIN_BRANCH}" ]]; then
+        MAIN_BRANCH="$(git -C "$root" branch --show-current)"
+    fi
+    [[ -n "${MAIN_BRANCH}" ]] || die "cannot determine the main branch, set main_branch in .slots/config"
+}
+
+slot_dir() {
+    local root="$1" name="$2"
+    echo "$(dirname "$root")/$(basename "$root")-$name"
+}
+
+run_hook() {
+    local root="$1" hook="$2" dir="$3"
+    if [[ -f "$root/.slots/$hook" ]]; then
+        echo "pitbox: running .slots/$hook in $dir"
+        bash "$root/.slots/$hook" "$dir"
+    fi
+}
+
+slot_names() {
+    local root="$1"
+    local base
+    base="$(basename "$root")"
+    for d in "$(dirname "$root")"/"$base"-wt*; do
+        [[ -d "$d" ]] && basename "$d" | sed 's/.*-//'
+    done
+}
+
+cmd_setup() {
+    local root count name dir
+    root="$(main_worktree)"
+    load_config "$root"
+    count="${1:-3}"
+    [[ "$count" =~ ^[0-9]+$ ]] || die "setup takes a number, got: $count"
+    for i in $(seq 1 "$count"); do
+        name="wt$i"
+        dir="$(slot_dir "$root" "$name")"
+        if [[ -d "$dir" ]]; then
+            echo "pitbox: $name already exists at $dir"
+            continue
+        fi
+        if git -C "$root" rev-parse --verify --quiet "refs/heads/slot/$name" >/dev/null; then
+            git -C "$root" worktree add "$dir" "slot/$name"
+        else
+            git -C "$root" worktree add -b "slot/$name" "$dir" "$MAIN_BRANCH"
+        fi
+        run_hook "$root" "setup.sh" "$dir"
+    done
+}
+
+cmd_status() {
+    local root name dir branch dirty ahead ready
+    root="$(main_worktree)"
+    load_config "$root"
+    echo "main branch: $MAIN_BRANCH    main worktree: $(main_worktree)"
+    printf '%-6s %-28s %-7s %-7s %-7s %s\n' "slot" "branch" "dirty" "ahead" "ready" "path"
+    local any=0
+    for name in $(slot_names "$root"); do
+        any=1
+        dir="$(slot_dir "$root" "$name")"
+        branch="$(git -C "$dir" branch --show-current)"
+        dirty="$(git -C "$dir" status --porcelain | wc -l | tr -d ' ')"
+        ahead="$(git -C "$dir" rev-list --count "$MAIN_BRANCH..HEAD" 2>/dev/null || echo '?')"
+        if [[ -f "$dir/TASK_READY.md" ]]; then
+            ready="yes"
+        else
+            ready="no"
+        fi
+        printf '%-6s %-28s %-7s %-7s %-7s %s\n' "$name" "$branch" "$dirty" "$ahead" "$ready" "$dir"
+    done
+    [[ "$any" == 1 ]] || echo "no slots yet, run: slots setup"
+}
+
+cmd_ready() {
+    local root name dir branch dirty ahead note
+    root="$(main_worktree)"
+    load_config "$root"
+    name="${1:-}"
+    shift || true
+    note="$*"
+    [[ -n "$name" ]] || die "usage: slots ready <slot> [note]"
+    dir="$(slot_dir "$root" "$name")"
+    [[ -d "$dir" ]] || die "no such slot: $name"
+    branch="$(git -C "$dir" branch --show-current)"
+    [[ "$branch" != "slot/$name" ]] || die "slot $name has no task branch, create one before marking ready"
+    dirty="$(git -C "$dir" status --porcelain | wc -l | tr -d ' ')"
+    [[ "$dirty" == 0 ]] || die "slot $name has $dirty uncommitted files, commit first"
+    ahead="$(git -C "$dir" rev-list --count "$MAIN_BRANCH..HEAD")"
+    [[ "$ahead" != 0 ]] || die "slot $name has no commits ahead of $MAIN_BRANCH"
+    cat > "$dir/TASK_READY.md" <<EOF
+branch: $branch
+slot: $name
+updated: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+notes: ${note:-none}
+EOF
+    echo "pitbox: $name marked ready ($branch, $ahead commits ahead of $MAIN_BRANCH)"
+}
+
+cmd_collect() {
+    local root target name dir branch main
+    root="$(main_worktree)"
+    load_config "$root"
+    target="${1:-}"
+    [[ -n "$target" ]] || die "usage: slots collect <slot|ready>"
+    main="$(main_worktree)"
+    collect_one() {
+        name="$1"
+        dir="$(slot_dir "$root" "$name")"
+        [[ -d "$dir" ]] || die "no such slot: $name"
+        branch="$(git -C "$dir" branch --show-current)"
+        if [[ "$branch" == "slot/$name" ]]; then
+            echo "pitbox: skipping $name (no task branch)"
+            return 0
+        fi
+        echo "pitbox: merging $branch from $name into $MAIN_BRANCH"
+        git -C "$main" merge --no-ff "$branch" -m "Merge $branch from $name"
+    }
+    if [[ "$target" == "ready" ]]; then
+        local any=0
+        for name in $(slot_names "$root"); do
+            if [[ -f "$(slot_dir "$root" "$name")/TASK_READY.md" ]]; then
+                any=1
+                collect_one "$name"
+            fi
+        done
+        [[ "$any" == 1 ]] || echo "pitbox: no ready slots found"
+    else
+        collect_one "$target"
+    fi
+}
+
+cmd_release() {
+    local root name dir branch
+    root="$(main_worktree)"
+    load_config "$root"
+    name="${1:-}"
+    [[ -n "$name" ]] || die "usage: slots release <slot>"
+    dir="$(slot_dir "$root" "$name")"
+    [[ -d "$dir" ]] || die "no such slot: $name"
+    branch="$(git -C "$dir" branch --show-current)"
+    git -C "$dir" checkout -B "slot/$name" "$MAIN_BRANCH"
+    if [[ "$branch" != "slot/$name" ]]; then
+        if git -C "$root" branch -d "$branch" 2>/dev/null; then
+            echo "pitbox: deleted merged branch $branch"
+        else
+            echo "pitbox: branch $branch is not fully merged, keeping it"
+        fi
+    fi
+    rm -f "$dir/TASK_READY.md"
+    run_hook "$root" "release.sh" "$dir" || run_hook "$root" "setup.sh" "$dir"
+    echo "pitbox: $name released, now on slot/$name at $MAIN_BRANCH"
+}
+
+cmd_mcp() {
+    local self dir server
+    self="${BASH_SOURCE[0]}"
+    dir="$(cd "$(dirname "$self")" && pwd)"
+    server="$dir/../mcp/server.mjs"
+    if [[ -f "$server" ]]; then
+        exec node "$server"
+    fi
+    die "mcp/server.mjs not found next to the CLI, clone the pitbox repository or run the server directly: node /path/to/pitbox/mcp/server.mjs"
+}
+
+cmd_guide() {
+    cat <<'EOF'
+pitbox workflow guide
+
+Modes:
+- One task: work directly in the main checkout.
+- Two or three parallel tasks: one per slot (wt1..wtN); the main checkout is reserved for the integrator.
+
+Slot agents:
+- Create your own task branch in the slot; never work on the slot/wtN stub branch itself.
+- Verify inside the slot, commit, push the task branch.
+- Then run: pitbox ready <slot> [notes]
+- Never merge into the main branch, never deploy, never touch other slots.
+
+Integrator (on the user's command):
+- pitbox status, then collect ready slots: pitbox collect <slot|ready>
+- Run the repository's full checks, then deploy following the repository's AGENTS.md.
+- Push the main branch, then pitbox release <slot> for each collected slot.
+
+Rules:
+- The user's word always overrides the TASK_READY.md marker.
+- If a merge is refused because the main checkout is dirty, report it; do not force.
+- Repository specifics: AGENTS.md in the repo root and the .slots/ hooks.
+EOF
+}
+
+detect_stack() {
+    local root="$1"
+    if [[ -f "$root/composer.json" ]]; then
+        echo "php-docker"
+    elif [[ -f "$root/bun.lock" || -f "$root/bun.lockb" || -f "$root/package.json" ]]; then
+        echo "bun"
+    fi
+}
+
+template_config() {
+    cat <<'EOF'
+# slots configuration
+# Main branch for slots; leave commented to autodetect (origin/HEAD, else current branch).
+# MAIN_BRANCH=main
+EOF
+}
+
+template_bun() {
+    local root="$1"
+    template_config > "$root/.slots/config"
+    cat > "$root/.slots/setup.sh" <<'EOF'
+#!/usr/bin/env bash
+# Installs dependencies in a slot worktree (arg $1) using the shared bun cache.
+set -Eeuo pipefail
+cd -- "$1"
+bun install --frozen-lockfile
+EOF
+    cat > "$root/.slots/release.sh" <<'EOF'
+#!/usr/bin/env bash
+# Re-syncs a released slot (arg $1) with the merged main branch.
+# Add build-artifact cleanup for this project below if needed.
+set -Eeuo pipefail
+cd -- "$1"
+bun install --frozen-lockfile
+EOF
+}
+
+template_php_docker() {
+    local root="$1"
+    template_config > "$root/.slots/config"
+    cat > "$root/.slots/setup.sh" <<'EOF'
+#!/usr/bin/env bash
+# Prepares a slot worktree (arg $1) for a PHP + docker-compose project.
+# Per-slot compose isolation needs: COMPOSE_PROJECT_NAME=<slot>, unique host
+# ports, and no fixed container_name in compose files.
+set -Eeuo pipefail
+cd -- "$1"
+command -v composer >/dev/null 2>&1 && composer install --no-interaction --no-progress
+echo "pitbox: remember to set COMPOSE_PROJECT_NAME and unique ports before running compose in this slot"
+EOF
+    cat > "$root/.slots/release.sh" <<'EOF'
+#!/usr/bin/env bash
+# Resets a released slot (arg $1) for a PHP + docker-compose project.
+set -Eeuo pipefail
+cd -- "$1"
+# docker compose -p <slot-project> down -v   # uncomment once per-slot project names are set
+command -v composer >/dev/null 2>&1 && composer install --no-interaction --no-progress
+EOF
+}
+
+cmd_init() {
+    local root stack="" force=0
+    root="$(main_worktree)"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --stack) stack="${2:-}"; shift 2 ;;
+            --force) force=1; shift ;;
+            *) die "init: unknown argument: $1" ;;
+        esac
+    done
+    if [[ -d "$root/.slots" && "$force" != 1 ]]; then
+        die ".slots already exists, use --force to overwrite"
+    fi
+    if [[ -z "$stack" ]]; then
+        stack="$(detect_stack "$root")"
+        [[ -n "$stack" ]] || die "cannot detect the stack, pass --stack bun or --stack php-docker"
+    fi
+    mkdir -p "$root/.slots"
+    case "$stack" in
+        bun) template_bun "$root" ;;
+        php-docker) template_php_docker "$root" ;;
+        *) die "unknown stack: $stack (supported: bun, php-docker)" ;;
+    esac
+    chmod +x "$root/.slots/setup.sh" "$root/.slots/release.sh"
+    echo "pitbox: wrote $stack templates to $root/.slots/ (commit them so slots can see the config)"
+}
+
+case "${1:-help}" in
+    init) shift; cmd_init "$@" ;;
+    guide) cmd_guide ;;
+    setup) shift; cmd_setup "$@" ;;
+    status) cmd_status ;;
+    ready) shift; cmd_ready "$@" ;;
+    collect) shift; cmd_collect "$@" ;;
+    release) shift; cmd_release "$@" ;;
+    mcp) cmd_mcp ;;
+    version|--version|-V) echo "pitbox $VERSION" ;;
+    help|--help|-h) usage ;;
+    *) usage; die "unknown command: $1" ;;
+esac
