@@ -13,6 +13,8 @@ diff -q "$REPO/mcp/server.mjs" "$REPO/plugin/mcp/server.mjs" || { echo "plugin/m
 
 echo "== CLI smoke in $T"
 git -C "$T" init -q -b main
+git -C "$T" config user.email "smoke@example.com"
+git -C "$T" config user.name "pitbox smoke"
 git -C "$T" commit --allow-empty -qm "init"
 
 cd "$T"
