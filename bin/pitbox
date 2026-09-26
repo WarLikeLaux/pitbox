@@ -14,7 +14,7 @@ usage() {
 pitbox $VERSION: fixed pool of git worktree slots for parallel agent tasks
 
 Usage (run anywhere inside the repository):
-  pitbox init [--stack S] [--force]   Write .pitbox/ templates for this repo (stacks: bun, php-docker; auto-detected)
+  pitbox init [--stack S] [--force]   Write .pitbox/ templates and add slot rules to an existing AGENTS.md
   pitbox setup [N]              Create slot worktrees wt1..wtN (default 3), run .pitbox/setup.sh in each
   pitbox claim [slot] [name]    Atomically book a free slot and create the task branch in it (auto-picks a free slot)
   pitbox status                 Show slots: branch, dirty files, commits ahead of main, readiness
@@ -312,11 +312,10 @@ Modes:
 Slot agents:
 - Start with: pitbox claim [slot] <branch-name>. It books a free slot atomically and creates your task branch in it.
 - Never pick a slot from status and create branches by hand, two agents can race for the same slot.
-- Verify inside the slot. For visual work, capture a screenshot from a local preview (for example with Playwright) and display the image in the conversation before asking for acceptance. A localhost link alone is not a reviewable preview for a remote user. Never deploy from the slot. Honor any required user acceptance before committing. A request to collect the shown result counts as acceptance. Follow repository rules for commits and pushes otherwise. Push is checked only when REQUIRE_PUSH=1 in .pitbox/config.
-- Then run: pitbox ready <slot> [notes]. ready refuses dirty slots, stub branches and unpushed commits (when REQUIRE_PUSH=1).
+- Verify inside the slot, commit only the task files, then run pitbox ready <slot> [notes]. Do not wait for user acceptance before committing or marking ready. For visual work, capture a screenshot from a local preview (for example with Playwright) and display it in the result. A localhost link alone is not reviewable for a remote user. ready refuses dirty, empty, or unpushed slots when REQUIRE_PUSH=1. It only records a handoff and never starts collection or deployment.
 - Never merge into the main branch, never deploy, never touch other slots.
 
-Integrator (on the user's command):
+Integrator (only on the user's explicit command, never just because a slot is ready):
 - pitbox status, then collect ready slots: pitbox collect <slot|ready>
 - collect refuses when the main worktree is off the main branch, when it is dirty, or when a slot changed after its marker.
 - Run the repository's full checks, then deploy once following the repository's AGENTS.md.
@@ -324,7 +323,8 @@ Integrator (on the user's command):
 
 Rules:
 - The user's word always overrides the TASK_READY.md marker.
-- In slot mode, defer repository deploy-before-commit requirements to the integrator after collection. They must not block a verified slot from being committed and marked ready. Direct work in the main checkout follows the repository's normal delivery order.
+- In slot mode, defer repository deploy-before-commit requirements to the integrator. Repository pre-commit visual acceptance gates do not apply to slot handoff. Neither blocks a verified slot from being committed and marked ready. User feedback can be handled as a follow-up fix. Direct work in the main checkout follows the repository's normal delivery order.
+- A request to collect ready slots already authorizes collection. Do not ask for a second confirmation.
 - If collect is refused for any reason, report it, do not force.
 - Repository specifics: AGENTS.md in the repo root and the .pitbox/ hooks.
 EOF
@@ -414,7 +414,17 @@ cmd_init() {
         *) die "unknown stack: $stack (supported: bun, php-docker)" ;;
     esac
     chmod +x "$root/.pitbox/setup.sh" "$root/.pitbox/release.sh"
-    echo "pitbox: wrote $stack templates to $root/.pitbox/ (commit them so slots can see the config)"
+    if [[ -f "$root/AGENTS.md" ]] && ! grep -Fqx '<!-- pitbox:slot-workflow -->' "$root/AGENTS.md"; then
+        cat >> "$root/AGENTS.md" <<'EOF'
+
+<!-- pitbox:slot-workflow -->
+## Pitbox slot workflow
+
+For tasks in pitbox slots, finish the task, run relevant checks, commit only the task files, and call `pitbox ready` without waiting for user acceptance. For visual work, show a screenshot in the result. A ready marker only records a handoff. It never starts collection or deployment. Slot agents do not deploy or collect. Only after the user explicitly asks, the integrator collects ready slots, runs full checks, deploys once, pushes the main branch, and releases the slots. Repository requirements to deploy or obtain visual acceptance before committing apply only to work outside pitbox slots. If a ready slot changes after feedback, commit the fix and run `pitbox ready` again.
+<!-- /pitbox:slot-workflow -->
+EOF
+    fi
+    echo "pitbox: wrote $stack templates to $root/.pitbox/ (review and commit .pitbox/ and any AGENTS.md change)"
 }
 
 case "${1:-help}" in

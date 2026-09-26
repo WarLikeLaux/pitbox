@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 // pitbox MCP server: zero-dependency stdio JSON-RPC facade over the pitbox CLI.
 // The workflow rules live in the tool descriptions and in the `guide` tool,
-// so agents follow pitbox without any AGENTS.md edits.
+// so agents see the pitbox workflow alongside any repository AGENTS.md rules.
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 
-const VERSION = "0.3.2";
+const VERSION = "0.3.3";
 
 const here = dirname(fileURLToPath(import.meta.url));
 function cliPath() {
@@ -36,13 +36,14 @@ const MODE_RULE = "Workflow rule: one task = work in the main checkout, two or t
 // infer the caller's repository from process.cwd().
 function serverInstructions() {
     return "pitbox manages a fixed pool of git worktree slots. For every repository tool call, pass repo as the absolute path " +
-        "to the target repository or worktree. If the repository has no .pitbox/config, run init, review and commit .pitbox/, " +
+        "to the target repository or worktree. If the repository has no .pitbox/config, run init, review and commit .pitbox/ " +
+        "and any generated AGENTS.md change, " +
         "then run setup. The task lifecycle is claim, work, ready, collect, release. " +
-        "Slot agents claim a free slot, verify work, capture and display visual screenshots in the conversation without deploying. " +
-        "A localhost link alone is not a reviewable preview for a remote user. " +
-        "honor user acceptance requirements, commit, and call ready. A request to collect a shown visual result counts as acceptance. " +
-        "In slot mode, defer repository deploy-before-commit requirements until integration: slot agents never deploy. " +
-        "The integrator calls collect, runs the full checks, deploys once, pushes, then calls release. " +
+        "Slot agents claim a free slot, verify work, commit task files and call ready without waiting for user acceptance. " +
+        "For visual work, capture and display a screenshot in the result. A localhost link alone is not reviewable for a remote user. " +
+        "In slot mode, defer repository deploy-before-commit requirements until integration and handle user feedback as follow-up work. " +
+        "Slot agents never deploy or collect. A ready marker never starts collection or deployment. " +
+        "Only on an explicit user request, the integrator calls collect, runs the full checks, deploys once, pushes, then calls release. " +
         "Call guide for the full rules and status for the pool state.";
 }
 
@@ -103,8 +104,9 @@ const TOOLS = [
         description:
             "Mark the slot's task ready for integration: writes TASK_READY.md recording the branch and its exact HEAD, refuses if the " +
             "slot is dirty, still on its slot/wtN stub branch, or (when REQUIRE_PUSH=1) has unpushed commits. Call it only after you " +
-            "verified the work and committed the task branch. For visual work, capture a screenshot from a local preview " +
-            "and display it in the conversation before requesting acceptance. A localhost link alone is insufficient. " +
+            "verified the work and committed the task branch. Do not wait for visual acceptance before committing or marking ready. " +
+            "This marker never merges, deploys, or starts an integrator automatically. " +
+            "For visual work, capture a screenshot from a local preview and display it in the result. A localhost link alone is insufficient. " +
             "Defer any repository deploy-before-commit rule to integration. " +
             "Never merge into the main branch, never deploy, never touch other " +
             "slots, the integrator does that.",
@@ -122,7 +124,7 @@ const TOOLS = [
     {
         name: "collect",
         description:
-            "Integrator tool: merge the slot's task branch into the main branch with a --no-ff merge commit. " +
+            "Integrator tool, call only on an explicit user request: merge the slot's task branch into the main branch with a --no-ff merge commit. " +
             "Pass the literal string 'ready' as slot to collect every slot with TASK_READY.md. " +
             "collect refuses to run when the main worktree is off the main branch or dirty, and when a slot changed after its " +
             "marker was written. After collecting, run the repository's full checks, perform the deferred deployment once, " +
@@ -153,8 +155,8 @@ const TOOLS = [
         name: "init",
         description:
             "Write .pitbox/ templates (config, setup.sh, release.sh) for this repository so pitbox knows how to prepare and " +
-            "clean slots. Auto-detects the stack (bun, php-docker) or take an explicit stack. Writes files into the repository " +
-            "root, run once per repository, commit the result.",
+            "clean slots. Add the pitbox slot delivery exception to an existing root AGENTS.md. Auto-detects the stack " +
+            "(bun, php-docker) or takes an explicit stack. Run once per repository, review and commit the result.",
         inputSchema: {
             type: "object",
             properties: {

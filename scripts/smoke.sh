@@ -31,8 +31,12 @@ git -C "$T" config user.name "pitbox smoke"
 git -C "$T" commit --allow-empty -qm "init"
 
 cd "$T"
+printf '# Project rules\n\n- Deploy before commit.\n' > AGENTS.md
 bash "$CLI" init --stack bun
 [[ -f "$T/.pitbox/config" && -x "$T/.pitbox/setup.sh" ]] || { echo "init failed" >&2; exit 1; }
+grep -Fqx '<!-- pitbox:slot-workflow -->' AGENTS.md || { echo "init did not add slot delivery rules" >&2; exit 1; }
+bash "$CLI" init --stack bun --force >/dev/null
+[[ "$(grep -Fc '<!-- pitbox:slot-workflow -->' AGENTS.md)" == 1 ]] || { echo "init duplicated slot delivery rules" >&2; exit 1; }
 # Hooks must not need bun in the test environment, replace with no-ops.
 printf '#!/usr/bin/env bash\nexit 0\n' > "$T/.pitbox/setup.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$T/.pitbox/release.sh"
@@ -40,7 +44,7 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$T/.pitbox/release.sh"
 # checkout and the collect off-branch guard would have nothing to compare against.
 echo "MAIN_BRANCH=main" >> "$T/.pitbox/config"
 # The documented flow commits .pitbox, and the collect guard demands a clean main checkout.
-git -C "$T" add .pitbox
+git -C "$T" add .pitbox AGENTS.md
 git -C "$T" commit -qm "slots"
 
 # Capturing output avoids SIGPIPE from grep -q under pipefail.
@@ -73,7 +77,9 @@ git -C "$WT1DIR" commit --allow-empty -qm "work"
 touch "$WT1DIR/dirty.txt"
 expect_fail ready wt1                # ready must refuse a dirty slot
 rm "$WT1DIR/dirty.txt"
+main_before_ready="$(git -C "$T" rev-parse HEAD)"
 bash "$CLI" ready wt1 "demo done"
+[[ "$(git -C "$T" rev-parse HEAD)" == "$main_before_ready" ]] || { echo "ready changed the main branch" >&2; exit 1; }
 grep -q "demo done" "$WT1DIR/TASK_READY.md"
 grep -q "^commit:" "$WT1DIR/TASK_READY.md"
 bash "$CLI" ready wt1 >/dev/null     # re-ready works, the marker itself never counts as dirt
