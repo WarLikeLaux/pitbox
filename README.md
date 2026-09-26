@@ -151,7 +151,7 @@ When `plugin/` changes, increase the version in `plugin/plugin.json`, `plugin/.c
 bash scripts/update-installed.sh
 ```
 
-The update script requires a clean checkout at the published `origin/main` commit. It refreshes the Codex, Claude, and MiniMax Code marketplaces, updates all installed plugins and `~/.local/bin/pitbox`, then compares the plugin caches with this checkout. Set `PITBOX_CLI_TARGET` to override the CLI install path or `PITBOX_MAVIS_TARGET` to override the MiniMax Code plugin directory. Pass `--only=claude|codex|mavis|cli` to update a single target. Start new Codex, Claude, and mavis sessions to load the updated plugin.
+The update script requires a clean checkout at the published `origin/main` commit. It refreshes the Codex, Claude, and MiniMax Code marketplaces, updates all installed plugins and `~/.local/bin/pitbox`, runs `mcode update` to refresh the MiniMax Code CLI itself, then compares the plugin caches with this checkout. Set `PITBOX_CLI_TARGET` to override the CLI install path or `PITBOX_MAVIS_TARGET` to override the MiniMax Code plugin directory. Pass `--only=claude|codex|mavis|mavis-cli|cli` to update a single target. Start new Codex, Claude, and mavis sessions to load the updated plugin.
 
 ## Repository configuration
 
