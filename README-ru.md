@@ -113,7 +113,7 @@ args = ["/path/to/pitbox/mcp/server.mjs"]
 | `release` | Интегратор: вернуть собранный слот в пул |
 | `init` | Написать шаблоны `.pitbox/` без изменений `AGENTS.md` |
 
-## Плагины для Claude Code и Codex
+## Плагины для Claude Code, Codex и MiniMax Code
 
 Плагин содержит MCP-сервер и один скилл `workflow` с режимами слота и интегратора. Агент может выбрать его при работе в слоте Pitbox или по просьбе собрать готовые слоты.
 
@@ -131,7 +131,17 @@ codex plugin marketplace add WarLikeLaux/pitbox
 codex plugin add pitbox@pitbox
 ```
 
-`mcp.json` плагина использует спек-переменную `${PLUGIN_ROOT}`, поэтому плагин сам подключает свой MCP-сервер в обоих агентах. На старых сборках Codex без поддержки плагинов зарегистрируйте сервер вручную, как показано выше, и скопируйте `plugin/skills/workflow` в свою директорию скиллов.
+MiniMax Code (mavis / mcode, 0.5+):
+
+```bash
+# Локальный маркетплейс — это каталог `directory ~/.minimax/plugins`.
+# Симлинк или копия плагина туда, затем обновить снимок.
+ln -sfn "$(pwd)/plugin" "$HOME/.minimax/plugins/pitbox"
+mcode plugin marketplace upgrade
+mcode plugin list    # покажет `[*] pitbox@local enabled`
+```
+
+`mcp.json` плагина использует спек-переменную `${PLUGIN_ROOT}`, поэтому плагин сам подключает свой MCP-сервер во всех поддерживаемых хостах. На старых сборках Codex без поддержки плагинов зарегистрируйте сервер вручную, как показано выше, и скопируйте `plugin/skills/workflow` в свою директорию скиллов.
 
 ### Обновление локальных установок
 
@@ -141,7 +151,7 @@ codex plugin add pitbox@pitbox
 bash scripts/update-installed.sh
 ```
 
-Скрипт требует чистый чекаут на опубликованном коммите `origin/main`. Он обновляет маркетплейсы Codex и Claude, оба установленных плагина и `~/.local/bin/pitbox`, затем сравнивает кэши плагина с исходниками. Если CLI установлен в другом месте, задайте `PITBOX_CLI_TARGET`. Новые версии плагинов загрузятся в новых сессиях Codex и Claude.
+Скрипт требует чистый чекаут на опубликованном коммите `origin/main`. Он обновляет маркетплейсы Codex, Claude и MiniMax Code, все установленные плагины и `~/.local/bin/pitbox`, затем сравнивает кэши плагина с исходниками. Если CLI стоит в другом месте, задайте `PITBOX_CLI_TARGET`; если плагин MiniMax Code в другом каталоге — `PITBOX_MAVIS_TARGET`. Чтобы обновить только один таргет, передайте `--only=claude|codex|mavis|cli`. Новые версии плагинов загрузятся в новых сессиях Codex, Claude и mavis.
 
 ## Конфигурация репозитория
 

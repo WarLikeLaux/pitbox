@@ -113,7 +113,7 @@ Plugin hosts may start the MCP server inside a plugin cache. Every repository to
 | `release` | Integrator: return a collected slot to the pool |
 | `init` | Write `.pitbox/` templates without editing `AGENTS.md` |
 
-## Plugins for Claude Code and Codex
+## Plugins for Claude Code, Codex, and MiniMax Code
 
 The plugin bundles the MCP server and one `workflow` skill with slot and integrator modes. Agents can select the skill when working in a Pitbox slot or when asked to collect ready slots.
 
@@ -131,7 +131,17 @@ codex plugin marketplace add WarLikeLaux/pitbox
 codex plugin add pitbox@pitbox
 ```
 
-The plugin's `mcp.json` uses the spec `${PLUGIN_ROOT}` variable, so the plugin wires its own MCP server in both agents. On older Codex builds without plugin support, register the server manually as shown above and copy `plugin/skills/workflow` into your skills directory.
+MiniMax Code (mavis / mcode, 0.5+):
+
+```bash
+# Local plugin marketplace is `directory ~/.minimax/plugins`.
+# Symlink or copy the plugin directory there, then refresh.
+ln -sfn "$(pwd)/plugin" "$HOME/.minimax/plugins/pitbox"
+mcode plugin marketplace upgrade
+mcode plugin list    # shows `[*] pitbox@local enabled`
+```
+
+The plugin's `mcp.json` uses the spec `${PLUGIN_ROOT}` variable, so the plugin wires its own MCP server in every supported host. On older Codex builds without plugin support, register the server manually as shown above and copy `plugin/skills/workflow` into your skills directory.
 
 ### Updating installed copies
 
@@ -141,7 +151,7 @@ When `plugin/` changes, increase the version in `plugin/plugin.json`, `plugin/.c
 bash scripts/update-installed.sh
 ```
 
-The update script requires a clean checkout at the published `origin/main` commit. It refreshes the Codex and Claude marketplaces, updates both installed plugins and `~/.local/bin/pitbox`, then compares the plugin caches with this checkout. Set `PITBOX_CLI_TARGET` if the standalone CLI lives elsewhere. Start new Codex and Claude sessions to load the updated plugin.
+The update script requires a clean checkout at the published `origin/main` commit. It refreshes the Codex, Claude, and MiniMax Code marketplaces, updates all installed plugins and `~/.local/bin/pitbox`, then compares the plugin caches with this checkout. Set `PITBOX_CLI_TARGET` to override the CLI install path or `PITBOX_MAVIS_TARGET` to override the MiniMax Code plugin directory. Pass `--only=claude|codex|mavis|cli` to update a single target. Start new Codex, Claude, and mavis sessions to load the updated plugin.
 
 ## Repository configuration
 

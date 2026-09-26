@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Refresh locally installed pitbox components from a published main commit.
-# Targets: claude plugin, codex plugin, standalone CLI. Every target is optional:
-# a missing CLI is skipped with a warning. Use --only=claude|codex|cli to limit targets.
+# Targets: claude plugin, codex plugin, mavis (MiniMax Code) plugin, standalone CLI.
+# Every target is optional: a missing CLI is skipped with a warning.
+# Use --only=claude|codex|mavis|cli to limit targets.
 set -Eeuo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,12 +12,12 @@ only=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --only=*) only="${1#--only=}"; shift ;;
-        *) { echo "Unknown argument: $1 (supported: --only=claude|codex|cli)" >&2; exit 1; } ;;
+        *) { echo "Unknown argument: $1 (supported: --only=claude|codex|mavis|cli)" >&2; exit 1; } ;;
     esac
 done
 case "$only" in
-    ""|claude|codex|cli) ;;
-    *) { echo "Unknown --only target: $only (supported: claude, codex, cli)" >&2; exit 1; } ;;
+    ""|claude|codex|mavis|cli) ;;
+    *) { echo "Unknown --only target: $only (supported: claude, codex, mavis, cli)" >&2; exit 1; } ;;
 esac
 
 wanted() { [[ -z "$only" || "$only" == "$1" ]]; }
@@ -120,12 +121,46 @@ update_cli() {
     echo "Updated the standalone CLI at $cli_target to pitbox $version"
 }
 
+update_mavis() {
+    # MiniMax Code (mavis / mcode) discovers local plugins from a directory:
+    # the local marketplace is `directory /home/<user>/.minimax/plugins` and
+    # any subdirectory that looks like a plugin (has plugin.json / .minimax-plugin/plugin.json /
+    # .claude-plugin/plugin.json) gets picked up automatically by `mcode plugin list`.
+    # There is no install command for local plugins, so we just refresh the copy.
+    local target="${PITBOX_MAVIS_TARGET:-$HOME/.minimax/plugins/pitbox}"
+    if [[ ! -d "$target" ]]; then
+        echo "Mavis plugin directory $target does not exist, skipping (create it manually to enable Mavis support)" >&2
+        return 0
+    fi
+    local installed
+    installed="$(node -p 'require(process.argv[1]).version' "$target/plugin.json" 2>/dev/null || echo unknown)"
+    if [[ "$version" == "$installed" ]] && diff -qr --exclude=.in_use plugin "$target" >/dev/null 2>&1; then
+        echo "Mavis plugin already at version $version"
+        return 0
+    fi
+    if [[ "$version" == "$installed" ]]; then
+        { echo "Mavis has version $version with different files. Bump the plugin version before publishing changes." >&2; exit 1; }
+    fi
+    # Prefer the runtime's recoverable deletion if it ships one (rm is shimmed there).
+    if command -v mavis-trash >/dev/null 2>&1; then
+        mavis-trash "$target"
+    else
+        rm -rf "$target"
+    fi
+    mkdir -p "$target"
+    cp -r plugin/. "$target/"
+    # Ask Mavis to refresh its local plugin snapshot.
+    command -v mcode >/dev/null && mcode plugin marketplace upgrade >/dev/null 2>&1 || true
+    echo "Updated the Mavis plugin at $target from version $installed to $version"
+}
+
 if wanted claude; then update_claude; fi
 if wanted codex; then update_codex; fi
+if wanted mavis; then update_mavis; fi
 if wanted cli; then update_cli; fi
 
 if [[ -n "$only" ]]; then
     echo "Updated pitbox $version target: $only"
 else
-    echo "Updated pitbox $version targets (claude, codex, cli). Start new agent sessions to load the updated plugin."
+    echo "Updated pitbox $version targets (claude, codex, mavis, cli). Start new agent sessions to load the updated plugin."
 fi
