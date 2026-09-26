@@ -14,7 +14,7 @@
 # Requires git 2.31+ (--path-format) and bash.
 set -Eeuo pipefail
 
-VERSION="0.4.2"
+VERSION="0.4.3"
 
 usage() {
     cat <<EOF
