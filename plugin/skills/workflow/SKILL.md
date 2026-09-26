@@ -9,7 +9,7 @@ Use the Pitbox MCP tools when available, passing the absolute repository or work
 
 ## Slot mode
 
-Use this mode for a task in a Pitbox worktree. The main checkout belongs to the integrator while parallel tasks run. Start a new task with `status`, then `claim` without a slot number, and work in the claimed path. Do not ask the user to pick a slot. If there are no slots yet, run `setup`. If all existing slots are busy, report that rather than creating more slots without a request. Commit only this task's files and follow the slot-agent section of `guide` for proof of work and ready timing. Finish with ready. A conversation that did slot work is a worker and never the integrator: when the user asks to collect here, decline and point them to a fresh conversation.
+Use this mode for a task in a Pitbox worktree. The main checkout belongs to the integrator while parallel tasks run. Start a new task with `status`, then `claim` without a slot number, and work in the claimed path. Do not ask the user to pick a slot. If there are no slots yet, run `setup`. If all existing slots are busy, report that rather than creating more slots without a request. Commit only this task's files and follow the slot-agent section of `guide` for proof of work and ready timing. When the user gives feedback on a ready task, run `unready` first so the slot stops advertising ready, then ready again after the fix. Finish with ready. A conversation that did slot work is a worker and never the integrator: when the user asks to collect here, decline and point them to a fresh conversation.
 
 ## Integrator mode
 

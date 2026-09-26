@@ -235,6 +235,18 @@ grep -q "^conflicts: resolved" "$STATE/wt2.collected" || { echo "collected state
 [[ ! -f "$STATE/wt2.conflict" ]] || { echo "resolved collect must clear the conflict marker" >&2; exit 1; }
 bash "$CLI" release wt2 >/dev/null
 
+# unready removes the readiness marker while feedback is handled.
+bash "$CLI" claim wt1 task/unready >/dev/null
+git -C "$WT1DIR" commit --allow-empty -qm "unready work"
+bash "$CLI" ready wt1 >/dev/null
+bash "$CLI" unready wt1 >/dev/null
+[[ ! -f "$STATE/wt1.ready" ]] || { echo "unready must remove the marker" >&2; exit 1; }
+expect_fail unready wt1               # nothing to unready the second time
+expect "no ready slots found" collect ready
+bash "$CLI" ready wt1 >/dev/null      # ready again after the fix
+expect "merging task/unready" collect ready
+bash "$CLI" release wt1 >/dev/null
+
 # The guide is rendered from the policy config.
 printf 'READY_MODE=confirm\nEVIDENCE=none\nINTEGRATE_CHECKS=ci\n' >> "$T/.pitbox/config"
 guide_out="$(bash "$CLI" guide)"

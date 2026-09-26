@@ -33,7 +33,7 @@ integrator only       agent + task branch  agent + task branch  spare
 
 In slot mode, pitbox defers a repository's deploy-before-commit rule to the integrator. By default (`READY_MODE=auto`) slot agents verify, commit, and mark work ready without waiting for review or approval. Repositories that want a confirmation step set `READY_MODE=confirm`. What agents show as proof of work is policy too (`EVIDENCE`): a screenshot from a local preview for UI work, a request and response example for backend work, plain text for logic. Ready does not merge or deploy anything. The user reviews the result and explicitly asks a fresh conversation to collect when satisfied, the worker does not collect its own work. The integrator collects ready slots on that one request and deploys once. Local checks on the merged main are policy too: by default they run only when a merge needed manual conflict resolution. Feedback after review is follow-up work. Direct work in the main checkout keeps the repository's normal delivery order. `pitbox guide` prints these rules rendered for the repository, from its own config, without touching `AGENTS.md`.
 
-You can keep using the same agent conversation. Feedback on a ready task before collection stays in its slot: the agent commits the fix and marks it ready again. After collection and release, give the agent a new task. It checks status and claims a free slot without asking you for a slot number. A separate new task before collection needs another free slot.
+You can keep using the same agent conversation. Feedback on a ready task before collection stays in its slot: the agent removes the marker with `unready` while fixing, so the slot stops advertising ready, and marks it ready again after. After collection and release, give the agent a new task. It checks status and claims a free slot without asking you for a slot number. A separate new task before collection needs another free slot.
 
 ## Quick start
 
@@ -63,6 +63,7 @@ Everyday commands:
 | `pitbox claim [branch-name]` | Atomically book a free slot and create the task branch (auto-picks a slot, optionally pass a slot before the branch name) |
 | `pitbox status` | Branch, dirty files, commits ahead of main, state (work/ready/collected) per slot, plus the active policy line |
 | `pitbox ready <slot> [note]` | Mark the slot's task ready, records the branch HEAD, refuses dirty or stub-branch slots |
+| `pitbox unready <slot>` | Remove the readiness marker while handling feedback, the slot returns to work until ready again |
 | `pitbox collect <slot\|ready>` | Merge the slot's task branch into the main branch with `--no-ff`, refuses a dirty or off-branch main checkout and slots changed after the marker, collected slots are skipped until released |
 | `pitbox release <slot>` | Reset the slot to main, delete the merged branch, run release hooks |
 | `pitbox guide` | Print the workflow rules for this repository, rendered from `.pitbox/config` |

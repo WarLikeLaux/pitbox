@@ -26,6 +26,7 @@ Usage (run anywhere inside the repository):
   pitbox claim [slot|branch-name] [branch-name]  Book a free slot and create the task branch (auto-picks a slot)
   pitbox status                 Show slots: branch, dirty files, commits ahead of main, state, policy
   pitbox ready <slot> [note]    Mark the slot's task ready (refuses dirty or empty slots)
+  pitbox unready <slot>         Remove the readiness marker while handling feedback, the slot returns to work
   pitbox collect <slot|ready>   Merge the slot branch into the main branch (--no-ff)
   pitbox release <slot>         Reset the slot to main, delete the merged branch, run release hooks
   pitbox guide                  Print the workflow rules for this repository, rendered from .pitbox/config
@@ -404,6 +405,28 @@ EOF
     fi
 }
 
+cmd_unready() {
+    local root name dir had_collected=0
+    root="$(main_worktree)"
+    load_config "$root"
+    name="${1:-}"
+    [[ -n "$name" ]] || die "usage: pitbox unready <slot>"
+    dir="$(slot_dir "$root" "$name")"
+    [[ -n "$dir" && -d "$dir" ]] || die "no such slot: $name"
+    import_legacy_marker "$root" "$name" "$dir"
+    if [[ ! -f "$(marker_file "$root" "$name")" && ! -f "$(collected_file "$root" "$name")" ]]; then
+        die "slot $name is not ready, nothing to unready"
+    fi
+    if [[ -f "$(collected_file "$root" "$name")" ]]; then
+        had_collected=1
+    fi
+    rm -f "$(marker_file "$root" "$name")" "$(collected_file "$root" "$name")"
+    echo "pitbox: $name back to work, ready marker removed"
+    if [[ "$had_collected" == 1 ]]; then
+        echo "pitbox: note: the task was already collected, run ready again to re-arm collection after the fix"
+    fi
+}
+
 cmd_collect() {
     local root target name dir any=0
     root="$(main_worktree)"
@@ -584,7 +607,7 @@ EOF
             ;;
     esac
     cat <<'EOF'
-- If the user gives feedback on the same ready task before collection, stay in that slot, commit the fix, and run ready again. For a new task after collection and release, check status and run pitbox claim without a slot number. A separate new task before collection also needs its own free slot.
+- If the user gives feedback on the same ready task before collection, stay in that slot, run pitbox unready <slot> so it stops advertising ready, commit the fix, and run ready again. For a new task after collection and release, check status and run pitbox claim without a slot number. A separate new task before collection also needs its own free slot.
 - Never merge into the main branch, never deploy, never touch other slots. Finish with ready: this conversation is a worker, never the integrator.
 
 Integrator (only on the user's explicit command, never just because a slot is ready):
@@ -719,6 +742,7 @@ case "${1:-help}" in
     claim) shift; cmd_claim "$@" ;;
     status) cmd_status ;;
     ready) shift; cmd_ready "$@" ;;
+    unready) shift; cmd_unready "$@" ;;
     collect) shift; cmd_collect "$@" ;;
     release) shift; cmd_release "$@" ;;
     mcp) cmd_mcp ;;

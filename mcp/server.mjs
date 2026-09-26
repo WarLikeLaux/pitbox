@@ -55,7 +55,8 @@ const MODE_RULE = "Workflow rule: one task = work in the main checkout, two or t
 function serverInstructions() {
     return "pitbox manages a fixed pool of git worktree slots per repository. " +
         "Pass repo as the absolute path to the target repository or worktree on every call. " +
-        "Lifecycle: an agent claims a slot, works in it, commits, and marks it ready; only on an explicit user " +
+        "Lifecycle: an agent claims a slot, works in it, commits, and marks it ready; on user feedback in a ready " +
+        "slot it calls unready first and ready again after the fix; only on an explicit user " +
         "request the integrator collects ready slots, runs the checks the repository policy defines, deploys once, pushes, " +
         "and releases the slots. A ready marker never merges or deploys. " +
         "A conversation that worked in a slot is a worker and never integrates: it finishes with ready, and collection belongs to a fresh conversation. " +
@@ -131,6 +132,19 @@ const TOOLS = [
             additionalProperties: false,
         },
         args: (a) => ["ready", a.slot, ...(a.note ? [a.note] : [])],
+    },
+    {
+        name: "unready",
+        description:
+            "Worker tool: remove the readiness marker while handling user feedback in a ready slot. The slot " +
+            "returns to work and a collect of ready slots skips it until you run ready again after the fix.",
+        inputSchema: {
+            type: "object",
+            properties: { slot: { type: "string", description: "Slot name, e.g. wt1" } },
+            required: ["slot"],
+            additionalProperties: false,
+        },
+        args: (a) => ["unready", a.slot],
     },
     {
         name: "collect",
