@@ -151,7 +151,7 @@ mcode plugin list    # покажет `[*] pitbox@local enabled`
 bash scripts/update-installed.sh
 ```
 
-Скрипт требует чистый чекаут на опубликованном коммите `origin/main`. Он обновляет маркетплейсы Codex, Claude и MiniMax Code, все установленные плагины и `~/.local/bin/pitbox`, прогоняет `mcode update` для обновления самого CLI MiniMax Code, затем сравнивает кэши плагина с исходниками. Если CLI стоит в другом месте, задайте `PITBOX_CLI_TARGET`; если плагин MiniMax Code в другом каталоге — `PITBOX_MAVIS_TARGET`. Чтобы обновить только один таргет, передайте `--only=claude|codex|mavis|mavis-cli|cli`. Новые версии плагинов загрузятся в новых сессиях Codex, Claude и mavis.
+Скрипт требует чистый чекаут на опубликованном коммите `origin/main`. Он обновляет маркетплейсы Codex, Claude и MiniMax Code, все установленные плагины и `~/.local/bin/pitbox`, затем сравнивает кэши плагина с исходниками. Если CLI стоит в другом месте, задайте `PITBOX_CLI_TARGET`; если плагин MiniMax Code в другом каталоге — `PITBOX_MAVIS_TARGET`. Чтобы обновить только один таргет, передайте `--only=claude|codex|mavis|cli`. Новые версии плагинов загрузятся в новых сессиях Codex, Claude и mavis.
 
 ## Конфигурация репозитория
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Refresh locally installed pitbox components from a published main commit.
-# Targets: claude plugin, codex plugin, mavis (MiniMax Code) plugin + mavis CLI, standalone CLI.
+# Targets: claude plugin, codex plugin, mavis (MiniMax Code) plugin, standalone CLI.
 # Every target is optional: a missing CLI is skipped with a warning.
-# Use --only=claude|codex|mavis|mavis-cli|cli to limit targets.
+# Use --only=claude|codex|mavis|cli to limit targets.
 set -Eeuo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -12,12 +12,12 @@ only=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --only=*) only="${1#--only=}"; shift ;;
-        *) { echo "Unknown argument: $1 (supported: --only=claude|codex|mavis|mavis-cli|cli)" >&2; exit 1; } ;;
+        *) { echo "Unknown argument: $1 (supported: --only=claude|codex|mavis|cli)" >&2; exit 1; } ;;
     esac
 done
 case "$only" in
-    ""|claude|codex|mavis|mavis-cli|cli) ;;
-    *) { echo "Unknown --only target: $only (supported: claude, codex, mavis, mavis-cli, cli)" >&2; exit 1; } ;;
+    ""|claude|codex|mavis|cli) ;;
+    *) { echo "Unknown --only target: $only (supported: claude, codex, mavis, cli)" >&2; exit 1; } ;;
 esac
 
 wanted() { [[ -z "$only" || "$only" == "$1" ]]; }
@@ -154,36 +154,13 @@ update_mavis() {
     echo "Updated the Mavis plugin at $target from version $installed to $version"
 }
 
-update_mavis_cli() {
-    # MiniMax Code ships its own updater (`mcode update`). It checks for a newer
-    # release and replaces the npm-managed install under ~/.nvm/.../lib/node_modules/@minimax-ai/code.
-    if ! command -v mcode >/dev/null 2>&1; then
-        echo "mcode (MiniMax Code CLI) is not on PATH, skipping" >&2
-        return 0
-    fi
-    local before
-    before="$(mcode --version 2>/dev/null || echo unknown)"
-    if mcode update; then
-        local after
-        after="$(mcode --version 2>/dev/null || echo unknown)"
-        if [[ "$before" == "$after" ]]; then
-            echo "MiniMax Code CLI already at $before"
-        else
-            echo "Updated MiniMax Code CLI: $before -> $after"
-        fi
-    else
-        { echo "MiniMax Code CLI update failed; leaving $before in place" >&2; return 0; }
-    fi
-}
-
 if wanted claude; then update_claude; fi
 if wanted codex; then update_codex; fi
 if wanted mavis; then update_mavis; fi
-if wanted mavis-cli; then update_mavis_cli; fi
 if wanted cli; then update_cli; fi
 
 if [[ -n "$only" ]]; then
     echo "Updated pitbox $version target: $only"
 else
-    echo "Updated pitbox $version targets (claude, codex, mavis, mavis-cli, cli). Start new agent sessions to load the updated plugin."
+    echo "Updated pitbox $version targets (claude, codex, mavis, cli). Start new agent sessions to load the updated plugin."
 fi

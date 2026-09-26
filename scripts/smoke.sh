@@ -1,26 +1,6 @@
 #!/usr/bin/env bash
 # Smoke test for pitbox: full CLI lifecycle in a throwaway repo, then an MCP stdio round-trip.
 set -Eeuo pipefail
-
-# Some environments shim `rm` with a wrapper that prints a status line on stdout
-# (e.g. `~/.minimax/bin/mavis-trash`). That contaminates command substitutions
-# like `$(pitbox claim ...)` that capture the real CLI's stdout. Strip those
-# shims from PATH so the smoke test sees the real `rm` and the captured output
-# stays clean.
-PATH_CLEAN=""
-IFS=: read -ra _parts <<< "$PATH"
-for _p in "${_parts[@]}"; do
-    if [[ "$_p" != *"/.minimax/shims" ]]; then
-        if [[ -z "$PATH_CLEAN" ]]; then
-            PATH_CLEAN="$_p"
-        else
-            PATH_CLEAN="$PATH_CLEAN:$_p"
-        fi
-    fi
-done
-PATH="$PATH_CLEAN"
-export PATH
-
 cd "$(dirname "$0")/.."
 REPO="$(pwd)"
 CLI="$REPO/bin/pitbox"
