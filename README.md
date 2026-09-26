@@ -66,6 +66,7 @@ Everyday commands:
 | `pitbox unready <slot>` | Remove the readiness marker while handling feedback, the slot returns to work until ready again |
 | `pitbox collect <slot\|ready>` | Merge the slot's task branch into the main branch with `--no-ff`, refuses a dirty or off-branch main checkout and slots changed after the marker, collected slots are skipped until released |
 | `pitbox release <slot>` | Reset the slot to main, delete the merged branch, run release hooks |
+| `pitbox ci` | CI status of the pushed main commit: green (exit 0), red (exit 1), pending (exit 2) |
 | `pitbox guide` | Print the workflow rules for this repository, rendered from `.pitbox/config` |
 
 ## MCP server
@@ -111,6 +112,7 @@ Plugin hosts may start the MCP server inside a plugin cache. Every repository to
 | `setup` | Create the fixed slot pool, never spawn ad-hoc worktrees |
 | `ready` | Mark a slot ready, records the branch HEAD in the git directory, refuses dirty or stub-branch slots, never merge yourself |
 | `collect` | Integrator: merge a slot branch, or `ready` for all marked slots, refuses dirty or off-branch main checkouts, skips already collected slots |
+| `ci` | Integrator: CI status of the pushed main commit, green, red or pending, deploy on green |
 | `release` | Integrator: return a collected slot to the pool |
 | `init` | Write `.pitbox/` templates without editing `AGENTS.md` |
 
@@ -158,7 +160,7 @@ The update script requires a clean checkout at the published `origin/main` commi
 
 pitbox is global, repository specifics live in `.pitbox/` committed next to the code.
 
-- `.pitbox/config`: shell variables. `MAIN_BRANCH=<branch>` overrides autodetection (order: config, `origin/HEAD`, current branch). `READY_MODE=auto|confirm` sets when slot agents mark ready: `auto` (default) commits and marks ready right after checks, `confirm` commits always but waits for the user's confirmation. `EVIDENCE=auto|screenshot|requests|none` sets what agents show as proof of work: `auto` (default) picks per task type. `REQUIRE_PUSH=1` makes `pitbox ready` demand a pushed branch, off by default. `INTEGRATE_CHECKS=auto|full|ci` sets when the integrator runs the repository's full checks: `auto` (default) only after a merge with manually resolved conflicts, since a clean merge adds no untested code and the slot agents verified their branches, clean merges push and release the slots right away and deploy when CI is green if it exists, `full` always before deploy, `ci` never locally, push and let CI be the gate, deploy on green.
+- `.pitbox/config`: shell variables. `MAIN_BRANCH=<branch>` overrides autodetection (order: config, `origin/HEAD`, current branch). `SLOTS=<N>` sets the pool size a bare `setup` creates (default 3), `status` warns when the registered pool differs. `READY_MODE=auto|confirm` sets when slot agents mark ready: `auto` (default) commits and marks ready right after checks, `confirm` commits always but waits for the user's confirmation. `EVIDENCE=auto|screenshot|requests|none` sets what agents show as proof of work: `auto` (default) picks per task type. `REQUIRE_PUSH=1` makes `pitbox ready` demand a pushed branch, off by default. `INTEGRATE_CHECKS=auto|full|ci` sets when the integrator runs the repository's full checks: `auto` (default) only after a merge with manually resolved conflicts, since a clean merge adds no untested code and the slot agents verified their branches, clean merges push and release the slots right away, the integrator watches CI with `pitbox ci` and deploys once it reports green, `full` always before deploy, `ci` never locally, push and let CI be the gate, deploy on green.
 - `.pitbox/setup.sh`: called with the slot directory as `$1` after a worktree is added and on release. The `bun` template runs `bun install --frozen-lockfile`, the `php-docker` template runs `composer install`.
 - `.pitbox/release.sh`: optional extra cleanup on release, falls back to `setup.sh`.
 

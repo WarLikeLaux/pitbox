@@ -86,6 +86,8 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$T/.pitbox/release.sh"
 # Pin the main branch, otherwise autodetection falls back to the current branch of the main
 # checkout and the collect off-branch guard would have nothing to compare against.
 echo "MAIN_BRANCH=main" >> "$T/.pitbox/config"
+# Pin the pool size, a bare setup must create exactly wt1 and wt2.
+echo "SLOTS=2" >> "$T/.pitbox/config"
 # The documented flow commits .pitbox, and the collect guard demands a clean main checkout.
 git -C "$T" add .pitbox AGENTS.md
 git -C "$T" commit -qm "slots"
@@ -96,8 +98,10 @@ STATE="$COMMON/pitbox/slots"
 
 expect "no slots yet" status
 expect "policy: ready=auto evidence=auto push=off" status
-bash "$CLI" setup 2
+# SLOTS in the config decides the pool size for a bare setup.
+bash "$CLI" setup
 [[ -d "$T/../$(basename "$T")-wt1" && -d "$T/../$(basename "$T")-wt2" ]] || { echo "setup failed" >&2; exit 1; }
+[[ ! -d "$T/../$(basename "$T")-wt3" ]] || { echo "setup ignored SLOTS=2" >&2; exit 1; }
 [[ -f "$STATE/wt1.path" && -f "$STATE/wt2.path" ]] || { echo "setup did not register the slots" >&2; exit 1; }
 
 # A lost registry is rebuilt from the git worktree list.
@@ -273,6 +277,36 @@ sed -i '/^READY_MODE=bogus$/d' "$T/.pitbox/config"
 echo "INTEGRATE_CHECKS=bogus" >> "$T/.pitbox/config"
 expect_fail status
 sed -i '/^INTEGRATE_CHECKS=bogus$/d' "$T/.pitbox/config"
+
+echo "SLOTS=bogus" >> "$T/.pitbox/config"
+expect_fail status                   # an invalid pool size is refused
+sed -i '/^SLOTS=bogus$/d' "$T/.pitbox/config"
+# The exact pool size stays silent, a mismatch warns.
+echo "SLOTS=3" >> "$T/.pitbox/config"
+expect "wants SLOTS=3, the pool has 2 slots" status
+sed -i '/^SLOTS=3$/d' "$T/.pitbox/config"
+
+# pitbox ci: none without a github origin, none without gh, failure on a broken gh.
+expect "CI: none" ci
+git -C "$T" remote set-url origin https://github.com/example/split.git
+# A shadow bin with every binary except gh keeps git working while gh goes missing.
+SHADOWBIN="$(mktemp -d)"
+for _dir in /usr/bin /bin; do
+    for _f in "$_dir"/*; do
+        [[ "$(basename "$_f")" == "gh" ]] && continue
+        ln -s "$_f" "$SHADOWBIN/" 2>/dev/null || true
+    done
+done
+PATH="$SHADOWBIN" bash "$CLI" ci >/dev/null 2>&1 || { echo "pitbox ci without gh should pass" >&2; exit 1; }
+FAKEBIN="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 7\n' > "$FAKEBIN/gh"
+chmod +x "$FAKEBIN/gh"
+if PATH="$FAKEBIN:$PATH" bash "$CLI" ci >/dev/null 2>&1; then
+    echo "pitbox ci should fail on a broken gh" >&2
+    exit 1
+fi
+rm -rf "$SHADOWBIN" "$FAKEBIN"
+git -C "$T" remote set-url origin "${T}-smoke-remote.git"
 
 echo "== MCP smoke"
 node "$REPO/scripts/mcp-smoke.mjs" "$T"

@@ -8,7 +8,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 
-const VERSION = "0.4.4";
+const VERSION = "0.5.0";
 const PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_TIMEOUT_MS = 120000;
 
@@ -161,6 +161,14 @@ const TOOLS = [
             additionalProperties: false,
         },
         args: (a) => ["collect", a.slot],
+    },
+    {
+        name: "ci",
+        description:
+            "Integrator tool: report the CI status of the pushed main commit, green, red, or pending. " +
+            "Run it after the push and actually watch it: deploy when it prints green or none, re-run it while pending, never deploy on red.",
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+        args: () => ["ci"],
     },
     {
         name: "release",
