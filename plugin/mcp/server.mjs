@@ -8,7 +8,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 
-const VERSION = "0.4.0";
+const VERSION = "0.4.1";
 const PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_TIMEOUT_MS = 120000;
 
@@ -58,6 +58,7 @@ function serverInstructions() {
         "Lifecycle: an agent claims a slot, works in it, commits, and marks it ready; only on an explicit user " +
         "request the integrator collects ready slots, runs the checks the repository policy defines, deploys once, pushes, " +
         "and releases the slots. A ready marker never merges or deploys. " +
+        "A conversation that worked in a slot is a worker and never integrates: it finishes with ready, and collection belongs to a fresh conversation. " +
         "The workflow rules are repository-specific: call guide with the repo path and follow its output. " +
         "If the repository has no .pitbox/config, run init, review and commit .pitbox/, then run setup.";
 }

@@ -14,7 +14,7 @@
 # Requires git 2.31+ (--path-format) and bash.
 set -Eeuo pipefail
 
-VERSION="0.4.0"
+VERSION="0.4.1"
 
 usage() {
     cat <<EOF
@@ -556,7 +556,7 @@ Source of truth: in slot mode this policy overrides the repository's AGENTS.md d
 
 Modes:
 - One task: work directly in the main checkout.
-- Two or three parallel tasks: one per slot (wt1..wtN), the main checkout is reserved for the integrator.
+- Two or three parallel tasks: one per slot (wt1..wtN), the main checkout is reserved for the integrator, a separate conversation from the slot workers.
 
 Slot agents:
 - Start with: pitbox claim [branch-name]. It books a free slot atomically and creates your task branch in it. Pass a slot number only if the user specified one.
@@ -584,9 +584,10 @@ EOF
     esac
     cat <<'EOF'
 - If the user gives feedback on the same ready task before collection, stay in that slot, commit the fix, and run ready again. For a new task after collection and release, check status and run pitbox claim without a slot number. A separate new task before collection also needs its own free slot.
-- Never merge into the main branch, never deploy, never touch other slots.
+- Never merge into the main branch, never deploy, never touch other slots. Finish with ready: this conversation is a worker, never the integrator.
 
 Integrator (only on the user's explicit command, never just because a slot is ready):
+- Integrate only from a conversation with no slot work in it: a fresh session, another agent, or the user's own terminal. If the user asks to collect in a conversation that did the slot work, decline and point them here.
 - pitbox status, then collect ready slots: pitbox collect <slot|ready>. Collected slots are skipped until released.
 - collect refuses when the main worktree is off the main branch, when it is dirty, or when a slot changed after its marker.
 EOF
