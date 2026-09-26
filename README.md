@@ -5,7 +5,7 @@
 
 English | [Русский](README-ru.md)
 
-A coordination layer for parallel coding agents: reusable worktree workers, an explicit handoff marker, and a deterministic integration procedure. A bash CLI plus an MCP facade whose tool descriptions carry the workflow rules. `pitbox init` also adds a slot delivery exception to an existing `AGENTS.md` so repository rules cannot block the handoff.
+A coordination layer for parallel coding agents: reusable worktree workers, an explicit handoff marker, and a deterministic integration procedure. A single plugin skill covers slot work and integration. The bash CLI and MCP tools carry the same workflow rules. `pitbox init` writes only `.pitbox/` files.
 
 ## Why
 
@@ -27,10 +27,12 @@ integrator only       agent + task branch  agent + task branch  spare
 
 - One task: work directly in the main checkout, no slots involved.
 - Two or three parallel tasks: one slot each, the main checkout belongs to the integrator.
-- A slot agent books a slot with `pitbox claim` (it atomically reserves a free slot and creates the task branch), verifies inside the slot, follows the repository's approval rules for commits and pushes, then marks the committed task branch ready.
+- A slot agent books a slot with `pitbox claim` (it atomically reserves a free slot and creates the task branch), verifies inside the slot, commits the task files, then marks the branch ready.
 - The integrator collects ready slots, runs the repository's full checks, deploys, pushes, and releases the slots back to the pool.
 
-In slot mode, pitbox defers a repository's deploy-before-commit rule to the integrator. Slot agents verify, commit, and mark work ready without waiting for visual acceptance. For visual changes, they capture a screenshot from a local preview and display it in the result. A localhost link alone is not reviewable for a remote user. Ready does not merge or deploy anything. The user reviews the result and explicitly asks the integrator to collect when satisfied. The integrator collects ready slots on that one request and deploys once. Feedback after review is follow-up work. Direct work in the main checkout keeps the repository's normal delivery order. `pitbox init` adds this slot exception to an existing `AGENTS.md` automatically.
+In slot mode, pitbox defers a repository's deploy-before-commit rule to the integrator. Slot agents verify, commit, and mark work ready without waiting for visual acceptance. For visual changes, they capture a screenshot from a local preview and display it in the result. A localhost link alone is not reviewable for a remote user. Ready does not merge or deploy anything. The user reviews the result and explicitly asks the integrator to collect when satisfied. The integrator collects ready slots on that one request and deploys once. Feedback after review is follow-up work. Direct work in the main checkout keeps the repository's normal delivery order. The plugin skill holds these rules without changing `AGENTS.md`.
+
+You can keep using the same agent conversation. Feedback on a ready task before collection stays in its slot: the agent commits the fix and marks it ready again. After collection and release, give the agent a new task. It checks status and claims a free slot without asking you for a slot number. A separate new task before collection needs another free slot.
 
 ## Quick start
 
@@ -45,7 +47,7 @@ Prepare a repository once:
 
 ```bash
 cd your-repo
-pitbox init      # writes .pitbox/ templates and slot rules in an existing AGENTS.md
+pitbox init      # writes .pitbox/ templates
 pitbox setup     # creates ../your-repo-wt1 .. wt3 and installs dependencies in each
 ```
 
@@ -60,9 +62,9 @@ Everyday commands:
 
 | Command | What it does |
 |---------|--------------|
-| `pitbox init [--stack S] [--force]` | Write `.pitbox/` templates and add slot rules to an existing `AGENTS.md` (stacks: `bun`, `php-docker`, auto-detected) |
+| `pitbox init [--stack S] [--force]` | Write `.pitbox/` templates without editing `AGENTS.md` (stacks: `bun`, `php-docker`, auto-detected) |
 | `pitbox setup [N]` | Create the slot pool, default three slots |
-| `pitbox claim [slot] [name]` | Atomically book a free slot and create the task branch in it (auto-picks when the slot is omitted) |
+| `pitbox claim [branch-name]` | Atomically book a free slot and create the task branch (auto-picks a slot, optionally pass a slot before the branch name) |
 | `pitbox status` | Branch, dirty files, commits ahead of main, readiness per slot |
 | `pitbox ready <slot> [note]` | Mark the slot's task ready, records the branch HEAD, refuses dirty or stub-branch slots |
 | `pitbox collect <slot\|ready>` | Merge the slot's task branch into the main branch with `--no-ff`, refuses a dirty or off-branch main checkout and slots changed after the marker |
@@ -71,7 +73,7 @@ Everyday commands:
 
 ## MCP server
 
-The MCP server is a zero-dependency stdio facade over the CLI. Every tool description embeds the relevant rule, and the `guide` tool returns the complete workflow. When a repository already has `AGENTS.md`, `pitbox init` adds the slot delivery exception there as well.
+The MCP server is a zero-dependency stdio facade over the CLI. Every tool description embeds the relevant rule, and the `guide` tool returns the complete workflow. The plugin's `workflow` skill selects slot or integrator mode.
 
 Point any MCP client at it:
 
@@ -100,7 +102,7 @@ command = "node"
 args = ["/path/to/pitbox/mcp/server.mjs"]
 ```
 
-Plugin hosts may start the MCP server inside a plugin cache. Every repository tool therefore requires `repo`, the absolute path to the target repository or worktree. At connect, the server injects the onboarding and task lifecycle instructions. For a new repository, call `init` with `repo`, review and commit `.pitbox/` and any `AGENTS.md` change, then call `setup` with the same `repo`.
+Plugin hosts may start the MCP server inside a plugin cache. Every repository tool therefore requires `repo`, the absolute path to the target repository or worktree. At connect, the server injects the onboarding and task lifecycle instructions. For a new repository, call `init` with `repo`, review and commit `.pitbox/`, then call `setup` with the same `repo`.
 
 ### Tools reference
 
@@ -113,11 +115,11 @@ Plugin hosts may start the MCP server inside a plugin cache. Every repository to
 | `ready` | Mark a slot ready, records the branch HEAD, refuses dirty or stub-branch slots, never merge yourself |
 | `collect` | Integrator: merge a slot branch, or `ready` for all marked slots, refuses dirty or off-branch main checkouts |
 | `release` | Integrator: return a collected slot to the pool |
-| `init` | Write `.pitbox/` templates, add slot rules to an existing `AGENTS.md`, and commit the result |
+| `init` | Write `.pitbox/` templates without editing `AGENTS.md` |
 
 ## Plugins for Claude Code and Codex
 
-The plugin bundles the MCP server and the `integrate` skill, so both the workflow rules and the integrator procedure arrive together.
+The plugin bundles the MCP server and one `workflow` skill with slot and integrator modes. Agents can select the skill when working in a Pitbox slot or when asked to collect ready slots.
 
 Claude Code:
 
@@ -133,7 +135,7 @@ codex plugin marketplace add WarLikeLaux/pitbox
 codex plugin add pitbox@pitbox
 ```
 
-The plugin's `mcp.json` uses the spec `${PLUGIN_ROOT}` variable, so the plugin wires its own MCP server in both agents. On older Codex builds without plugin support, register the server manually as shown above and copy `plugin/skills/integrate` into your skills directory.
+The plugin's `mcp.json` uses the spec `${PLUGIN_ROOT}` variable, so the plugin wires its own MCP server in both agents. On older Codex builds without plugin support, register the server manually as shown above and copy `plugin/skills/workflow` into your skills directory.
 
 ### Updating installed copies
 

@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 // pitbox MCP server: zero-dependency stdio JSON-RPC facade over the pitbox CLI.
-// The workflow rules live in the tool descriptions and in the `guide` tool,
-// so agents see the pitbox workflow alongside any repository AGENTS.md rules.
+// The workflow rules live in the plugin skill, tool descriptions, and guide.
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 
-const VERSION = "0.3.3";
+const VERSION = "0.3.4";
 
 const here = dirname(fileURLToPath(import.meta.url));
 function cliPath() {
@@ -36,10 +35,13 @@ const MODE_RULE = "Workflow rule: one task = work in the main checkout, two or t
 // infer the caller's repository from process.cwd().
 function serverInstructions() {
     return "pitbox manages a fixed pool of git worktree slots. For every repository tool call, pass repo as the absolute path " +
-        "to the target repository or worktree. If the repository has no .pitbox/config, run init, review and commit .pitbox/ " +
-        "and any generated AGENTS.md change, " +
+        "to the target repository or worktree. If the repository has no .pitbox/config, run init, review and commit .pitbox/, " +
         "then run setup. The task lifecycle is claim, work, ready, collect, release. " +
+        "For slot work or a user-requested collection, use the plugin's workflow skill when available. " +
         "Slot agents claim a free slot, verify work, commit task files and call ready without waiting for user acceptance. " +
+        "In the same conversation, feedback on an uncollected ready task stays in that slot: commit the fix and call ready again. " +
+        "For a new task after collection and release, call status, then claim without a slot number and work in the claimed path. " +
+        "A separate new task before collection also needs its own free slot. Never ask the user to pick a slot. " +
         "For visual work, capture and display a screenshot in the result. A localhost link alone is not reviewable for a remote user. " +
         "In slot mode, defer repository deploy-before-commit requirements until integration and handle user feedback as follow-up work. " +
         "Slot agents never deploy or collect. A ready marker never starts collection or deployment. " +
@@ -82,7 +84,9 @@ const TOOLS = [
         name: "claim",
         description:
             "Take a free slot for a new parallel task: pitbox books a slot atomically and creates your task branch in it. " +
-            "Pass a branch name for the task branch, omit slot to auto-pick the first free one. " +
+            "Pass a branch name for the task branch, omit slot to auto-pick the first free one. After a previous task was " +
+            "collected and released, call status and claim for the next task, including in the same conversation. " +
+            "Use the claimed path and do not ask the user for a slot number. " +
             "Never pick a slot from status and create branches by hand, two agents can race for the same slot. " +
             "One task per slot, never touch other slots. " + MODE_RULE,
         inputSchema: {
@@ -155,7 +159,7 @@ const TOOLS = [
         name: "init",
         description:
             "Write .pitbox/ templates (config, setup.sh, release.sh) for this repository so pitbox knows how to prepare and " +
-            "clean slots. Add the pitbox slot delivery exception to an existing root AGENTS.md. Auto-detects the stack " +
+            "clean slots. Does not edit AGENTS.md. Auto-detects the stack " +
             "(bun, php-docker) or takes an explicit stack. Run once per repository, review and commit the result.",
         inputSchema: {
             type: "object",

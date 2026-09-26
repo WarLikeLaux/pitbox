@@ -7,16 +7,16 @@
 #   .pitbox/release.sh   optional, called with the slot dir as $1 on release
 set -Eeuo pipefail
 
-VERSION="0.3.0"
+VERSION="0.3.4"
 
 usage() {
     cat <<EOF
 pitbox $VERSION: fixed pool of git worktree slots for parallel agent tasks
 
 Usage (run anywhere inside the repository):
-  pitbox init [--stack S] [--force]   Write .pitbox/ templates and add slot rules to an existing AGENTS.md
+  pitbox init [--stack S] [--force]   Write .pitbox/ templates
   pitbox setup [N]              Create slot worktrees wt1..wtN (default 3), run .pitbox/setup.sh in each
-  pitbox claim [slot] [name]    Atomically book a free slot and create the task branch in it (auto-picks a free slot)
+  pitbox claim [slot|branch-name] [branch-name]  Book a free slot and create the task branch (auto-picks a slot)
   pitbox status                 Show slots: branch, dirty files, commits ahead of main, readiness
   pitbox ready <slot> [note]    Mark the slot's task ready (writes TASK_READY.md, refuses dirty or empty slots)
   pitbox collect <slot|ready>   Merge the slot branch into the main branch (--no-ff)
@@ -106,18 +106,24 @@ claim_one() {
         run_hook "$root" "setup.sh" "$dir"
     fi
     git -C "$dir" checkout -q -b "$branch" 2>/dev/null || die "cannot create branch $branch in $name, it already exists?"
-    echo "pitbox: claimed $name for $branch"
+    echo "pitbox: claimed $name for $branch at $dir"
 }
 
 cmd_claim() {
-    local root want="" name="" free s
+    local root want="" name="" free s has_slot=0
     root="$(main_worktree)"
     load_config "$root"
     case $# in
         0) ;;
-        1) want="$1" ;;
+        1)
+            if [[ "$1" =~ ^wt[0-9]+$ ]]; then
+                want="$1"
+            else
+                name="$1"
+            fi
+            ;;
         2) want="$1"; name="$2" ;;
-        *) die "usage: pitbox claim [slot] [branch-name]" ;;
+        *) die "usage: pitbox claim [slot|branch-name] [branch-name]" ;;
     esac
     [[ -n "$name" ]] || name="task/$(date -u +%Y%m%d-%H%M%S)"
     # Deliberately global so the single-quoted EXIT trap below still sees it.
@@ -129,12 +135,16 @@ cmd_claim() {
     else
         free=""
         for s in $(slot_names "$root"); do
+            has_slot=1
             if [[ "$(git -C "$(slot_dir "$root" "$s")" branch --show-current)" == "slot/$s" ]]; then
                 free="$s"
                 break
             fi
         done
-        [[ -n "$free" ]] || die "no free slot, run: pitbox setup"
+        if [[ -z "$free" ]]; then
+            [[ "$has_slot" == 1 ]] || die "no slots yet, run: pitbox setup"
+            die "no free slot, wait for a slot to be released"
+        fi
         claim_one "$root" "$free" "$name"
     fi
 }
@@ -310,9 +320,10 @@ Modes:
 - Two or three parallel tasks: one per slot (wt1..wtN), the main checkout is reserved for the integrator.
 
 Slot agents:
-- Start with: pitbox claim [slot] <branch-name>. It books a free slot atomically and creates your task branch in it.
+- Start with: pitbox claim [branch-name]. It books a free slot atomically and creates your task branch in it. Pass a slot number only if the user specified one.
 - Never pick a slot from status and create branches by hand, two agents can race for the same slot.
 - Verify inside the slot, commit only the task files, then run pitbox ready <slot> [notes]. Do not wait for user acceptance before committing or marking ready. For visual work, capture a screenshot from a local preview (for example with Playwright) and display it in the result. A localhost link alone is not reviewable for a remote user. ready refuses dirty, empty, or unpushed slots when REQUIRE_PUSH=1. It only records a handoff and never starts collection or deployment.
+- If the user gives feedback on the same ready task before collection, stay in that slot, commit the fix, and run ready again. For a new task after collection and release, check status and run pitbox claim without a slot number. Work in the path returned by claim. The user does not choose a slot. A separate new task before collection also needs its own free slot.
 - Never merge into the main branch, never deploy, never touch other slots.
 
 Integrator (only on the user's explicit command, never just because a slot is ready):
@@ -414,17 +425,7 @@ cmd_init() {
         *) die "unknown stack: $stack (supported: bun, php-docker)" ;;
     esac
     chmod +x "$root/.pitbox/setup.sh" "$root/.pitbox/release.sh"
-    if [[ -f "$root/AGENTS.md" ]] && ! grep -Fqx '<!-- pitbox:slot-workflow -->' "$root/AGENTS.md"; then
-        cat >> "$root/AGENTS.md" <<'EOF'
-
-<!-- pitbox:slot-workflow -->
-## Pitbox slot workflow
-
-For tasks in pitbox slots, finish the task, run relevant checks, commit only the task files, and call `pitbox ready` without waiting for user acceptance. For visual work, show a screenshot in the result. A ready marker only records a handoff. It never starts collection or deployment. Slot agents do not deploy or collect. Only after the user explicitly asks, the integrator collects ready slots, runs full checks, deploys once, pushes the main branch, and releases the slots. Repository requirements to deploy or obtain visual acceptance before committing apply only to work outside pitbox slots. If a ready slot changes after feedback, commit the fix and run `pitbox ready` again.
-<!-- /pitbox:slot-workflow -->
-EOF
-    fi
-    echo "pitbox: wrote $stack templates to $root/.pitbox/ (review and commit .pitbox/ and any AGENTS.md change)"
+    echo "pitbox: wrote $stack templates to $root/.pitbox/ (review and commit .pitbox/)"
 }
 
 case "${1:-help}" in

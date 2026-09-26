@@ -81,9 +81,9 @@ const status = await request("tools/call", { name: "status", arguments: { repo }
 assert.equal(status.result.isError, false);
 assert.ok(status.result.content[0].text.includes("main branch"));
 
-const claim = await request("tools/call", { name: "claim", arguments: { repo } });
+const claim = await request("tools/call", { name: "claim", arguments: { repo, name: "task/mcp" } });
 assert.equal(claim.result.isError, false, `claim failed: ${claim.result.content[0].text}`);
-assert.ok(claim.result.content[0].text.includes("claimed"));
+assert.ok(claim.result.content[0].text.includes("claimed") && claim.result.content[0].text.includes("task/mcp"));
 
 const initCall = await request("tools/call", { name: "init", arguments: { repo, stack: "bun", force: true } });
 assert.equal(initCall.result.isError, false, `init failed: ${initCall.result.content[0].text}`);

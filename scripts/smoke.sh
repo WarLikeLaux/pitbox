@@ -32,11 +32,13 @@ git -C "$T" commit --allow-empty -qm "init"
 
 cd "$T"
 printf '# Project rules\n\n- Deploy before commit.\n' > AGENTS.md
+agents_before="$(sha256sum AGENTS.md | cut -d' ' -f1)"
 bash "$CLI" init --stack bun
 [[ -f "$T/.pitbox/config" && -x "$T/.pitbox/setup.sh" ]] || { echo "init failed" >&2; exit 1; }
-grep -Fqx '<!-- pitbox:slot-workflow -->' AGENTS.md || { echo "init did not add slot delivery rules" >&2; exit 1; }
+[[ "$(sha256sum AGENTS.md | cut -d' ' -f1)" == "$agents_before" ]] || { echo "init changed AGENTS.md" >&2; exit 1; }
+bash "$CLI" guide | grep -Fq 'For a new task after collection and release' || { echo "guide did not explain continuing a conversation" >&2; exit 1; }
 bash "$CLI" init --stack bun --force >/dev/null
-[[ "$(grep -Fc '<!-- pitbox:slot-workflow -->' AGENTS.md)" == 1 ]] || { echo "init duplicated slot delivery rules" >&2; exit 1; }
+[[ "$(sha256sum AGENTS.md | cut -d' ' -f1)" == "$agents_before" ]] || { echo "init --force changed AGENTS.md" >&2; exit 1; }
 # Hooks must not need bun in the test environment, replace with no-ops.
 printf '#!/usr/bin/env bash\nexit 0\n' > "$T/.pitbox/setup.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$T/.pitbox/release.sh"
@@ -73,6 +75,9 @@ WT2DIR="$T/../$(basename "$T")-wt2"
 expect_fail ready wt1                # ready must refuse a stub branch
 bash "$CLI" claim wt1 task/demo
 expect_fail claim wt1 task/dup       # claim must refuse a busy slot
+bash "$CLI" claim wt2 task/temporary >/dev/null
+expect_fail claim                      # do not create more slots when all are busy
+bash "$CLI" release wt2 >/dev/null
 git -C "$WT1DIR" commit --allow-empty -qm "work"
 touch "$WT1DIR/dirty.txt"
 expect_fail ready wt1                # ready must refuse a dirty slot
@@ -122,6 +127,10 @@ bash "$CLI" status >/dev/null
 # claim auto-picks the only free slot.
 bash "$CLI" claim
 [[ "$(git -C "$WT1DIR" branch --show-current)" == task/* ]] || { echo "claim should auto-pick the free wt1" >&2; exit 1; }
+bash "$CLI" release wt1 >/dev/null
+claim_output="$(bash "$CLI" claim task/named)"
+[[ "$(git -C "$WT1DIR" branch --show-current)" == task/named ]] || { echo "claim should accept a branch name without a slot" >&2; exit 1; }
+[[ "$claim_output" == *" at $(cd "$WT1DIR" && pwd)" ]] || { echo "claim should report the claimed path" >&2; exit 1; }
 bash "$CLI" release wt1 >/dev/null
 
 # A free slot can lag behind main. Claim must sync it before creating a task branch.
