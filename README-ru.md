@@ -124,7 +124,14 @@ Claude Code:
 /plugin install pitbox@pitbox
 ```
 
-Codex: в репозитории лежат `.agents/plugins/marketplace.json` и директория плагина в раскладке [agent-plugins.org](https://agent-plugins.org) (`plugin/plugin.json`, `plugin/mcp.json`). Если ваша сборка Codex не разворачивает `${CLAUDE_PLUGIN_ROOT}` в MCP-конфигах, зарегистрируйте сервер вручную как показано выше и скопируйте `plugin/skills/integrate` в свою директорию скиллов.
+Codex (0.157+):
+
+```
+codex plugin marketplace add WarLikeLaux/pitbox
+codex plugin add pitbox@pitbox
+```
+
+`mcp.json` плагина использует спек-переменную `${PLUGIN_ROOT}`, поэтому плагин сам подключает свой MCP-сервер в обоих агентах. На старых сборках Codex без поддержки плагинов зарегистрируйте сервер вручную, как показано выше, и скопируйте `plugin/skills/integrate` в свою директорию скиллов.
 
 ## Конфигурация репозитория
 
