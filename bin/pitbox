@@ -343,7 +343,7 @@ cmd_status() {
     load_config "$root"
     echo "main branch: $MAIN_BRANCH    main worktree: $root"
     echo "policy: ready=$READY_MODE evidence=$EVIDENCE push=$( [[ "$REQUIRE_PUSH" == "1" ]] && echo on || echo off ) checks=$INTEGRATE_CHECKS"
-    printf '%-6s %-28s %-7s %-7s %-7s %-10s %s\n' "slot" "branch" "dirty" "ahead" "state" "path"
+    printf '%-6s %-28s %-7s %-7s %-10s %s\n' "slot" "branch" "dirty" "ahead" "state" "path"
     for name in $(slot_names "$root"); do
         any=1
         dir="$(slot_dir "$root" "$name")"
@@ -359,7 +359,7 @@ cmd_status() {
             dirty="$(dirty_count "$dir")"
             ahead="$(git -C "$dir" rev-list --count "$MAIN_BRANCH..HEAD" 2>/dev/null)" || ahead="?"
         fi
-        printf '%-6s %-28s %-7s %-7s %-7s %-10s %s\n' "$name" "$branch" "$dirty" "$ahead" "$state" "${dir:-unknown}"
+        printf '%-6s %-28s %-7s %-7s %-10s %s\n' "$name" "$branch" "$dirty" "$ahead" "$state" "${dir:-unknown}"
     done
     [[ "$any" == 1 ]] || echo "no slots yet, run: pitbox setup"
 }

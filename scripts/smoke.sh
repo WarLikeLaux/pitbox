@@ -136,6 +136,7 @@ git -C "$T" log --merges --format=%s | grep -q "task/other"
 
 # Release falls back to setup.sh when release.sh is missing, and clears the state.
 echo '.setup-ran' >> "$T/.git/info/exclude"
+# shellcheck disable=SC2016  # the hook must receive $1 literally
 printf '#!/usr/bin/env bash\ntouch "$1/.setup-ran"\n' > "$T/.pitbox/setup.sh"
 rm "$T/.pitbox/release.sh"
 expect "released" release wt1
