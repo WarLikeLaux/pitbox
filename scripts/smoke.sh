@@ -12,6 +12,18 @@ trap 'rm -rf "$T" "$T"-wt1 "$T"-wt2 "$T"-smoke-remote.git' EXIT
 # The plugin bundles its own copy of the MCP server, keep them identical.
 diff -q "$REPO/mcp/server.mjs" "$REPO/plugin/mcp/server.mjs" || { echo "plugin/mcp/server.mjs is out of sync with mcp/server.mjs" >&2; exit 1; }
 
+node - <<'NODE'
+const fs = require('node:fs');
+const read = path => JSON.parse(fs.readFileSync(path, 'utf8'));
+const portable = read('plugin/plugin.json').version;
+const claude = read('plugin/.claude-plugin/plugin.json').version;
+const marketplace = read('.claude-plugin/marketplace.json').plugins.find(plugin => plugin.name === 'pitbox')?.version;
+if (!portable || portable !== claude || portable !== marketplace) {
+    console.error('Plugin versions must match in both manifests and the Claude marketplace');
+    process.exit(1);
+}
+NODE
+
 echo "== CLI smoke in $T"
 git -C "$T" init -q -b main
 git -C "$T" config user.email "smoke@example.com"

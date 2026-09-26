@@ -14,6 +14,6 @@ jobs:
         with:
           node-version: 22
       - name: shellcheck
-        run: shellcheck bin/pitbox
+        run: shellcheck bin/pitbox scripts/update-installed.sh
       - name: CLI and MCP smoke
         run: bash scripts/smoke.sh

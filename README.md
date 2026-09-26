@@ -133,6 +133,16 @@ codex plugin add pitbox@pitbox
 
 The plugin's `mcp.json` uses the spec `${PLUGIN_ROOT}` variable, so the plugin wires its own MCP server in both agents. On older Codex builds without plugin support, register the server manually as shown above and copy `plugin/skills/integrate` into your skills directory.
 
+### Updating installed copies
+
+When `plugin/` changes, increase the version in `plugin/plugin.json`, `plugin/.claude-plugin/plugin.json`, and `.claude-plugin/marketplace.json` together. Claude keeps the cached copy when the version stays the same. Run `bash scripts/smoke.sh`, commit, and push `main`. Then update this machine:
+
+```bash
+bash scripts/update-installed.sh
+```
+
+The update script requires a clean checkout at the published `origin/main` commit. It refreshes the Codex and Claude marketplaces, updates both installed plugins and `~/.local/bin/pitbox`, then compares the plugin caches with this checkout. Set `PITBOX_CLI_TARGET` if the standalone CLI lives elsewhere. Start new Codex and Claude sessions to load the updated plugin.
+
 ## Repository configuration
 
 pitbox is global, repository specifics live in `.slots/` committed next to the code.
