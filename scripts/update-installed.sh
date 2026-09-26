@@ -1,11 +1,27 @@
 #!/usr/bin/env bash
 # Refresh locally installed pitbox components from a published main commit.
+# Targets: claude plugin, codex plugin, standalone CLI. Every target is optional:
+# a missing CLI is skipped with a warning. Use --only=claude|codex|cli to limit targets.
 set -Eeuo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 
-for command_name in git node codex claude diff install cmp; do
+only=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --only=*) only="${1#--only=}"; shift ;;
+        *) { echo "Unknown argument: $1 (supported: --only=claude|codex|cli)" >&2; exit 1; } ;;
+    esac
+done
+case "$only" in
+    ""|claude|codex|cli) ;;
+    *) { echo "Unknown --only target: $only (supported: claude, codex, cli)" >&2; exit 1; } ;;
+esac
+
+wanted() { [[ -z "$only" || "$only" == "$1" ]]; }
+
+for command_name in git node diff install cmp; do
     command -v "$command_name" >/dev/null || { echo "Missing command: $command_name" >&2; exit 1; }
 done
 
@@ -36,8 +52,10 @@ process.stdout.write(portable);
 NODE
 )"
 
-get_claude_cache() {
-    claude plugin list --json | node -e '
+update_claude() {
+    command -v claude >/dev/null || { echo "claude CLI not found, skipping the Claude plugin update" >&2; return 0; }
+    local cache installed
+    cache="$(claude plugin list --json | node -e '
 let input = "";
 process.stdin.on("data", chunk => input += chunk);
 process.stdin.on("end", () => {
@@ -45,11 +63,30 @@ process.stdin.on("end", () => {
     if (!plugin?.installPath || !plugin.enabled) process.exit(1);
     process.stdout.write(plugin.installPath);
 });
-'
+')" || { echo "pitbox@pitbox must be installed and enabled in Claude" >&2; exit 1; }
+    installed="$(node -p 'require(process.argv[1]).version' "$cache/plugin.json")"
+    if [[ "$version" == "$installed" ]] && ! diff -qr --exclude=.in_use plugin "$cache" >/dev/null; then
+        { echo "Claude has version $version with different files. Bump the plugin version before publishing changes." >&2; exit 1; }
+    fi
+    claude plugin validate plugin --strict
+    claude plugin marketplace update pitbox
+    claude plugin update pitbox@pitbox
+    cache="$(claude plugin list --json | node -e '
+let input = "";
+process.stdin.on("data", chunk => input += chunk);
+process.stdin.on("end", () => {
+    const plugin = JSON.parse(input).find(item => item.id === "pitbox@pitbox");
+    if (!plugin?.installPath || !plugin.enabled) process.exit(1);
+    process.stdout.write(plugin.installPath);
+});
+')"
+    diff -qr --exclude=.in_use plugin "$cache"
 }
 
-get_codex_cache() {
-    codex mcp list --json | node -e '
+update_codex() {
+    command -v codex >/dev/null || { echo "codex CLI not found, skipping the Codex plugin update" >&2; return 0; }
+    local cache installed
+    cache="$(codex mcp list --json | node -e '
 let input = "";
 process.stdin.on("data", chunk => input += chunk);
 process.stdin.on("end", () => {
@@ -57,37 +94,38 @@ process.stdin.on("end", () => {
     if (!server?.transport?.env?.PLUGIN_ROOT) process.exit(1);
     process.stdout.write(server.transport.env.PLUGIN_ROOT);
 });
-'
+')" || { echo "The plugin-managed pitbox MCP server must be enabled in Codex" >&2; exit 1; }
+    installed="$(node -p 'require(process.argv[1]).version' "$cache/plugin.json")"
+    if [[ "$version" == "$installed" ]] && ! diff -qr --exclude=.in_use plugin "$cache" >/dev/null; then
+        { echo "Codex has version $version with different files. Bump the plugin version before publishing changes." >&2; exit 1; }
+    fi
+    codex plugin marketplace upgrade pitbox
+    codex plugin add pitbox@pitbox
+    cache="$(codex mcp list --json | node -e '
+let input = "";
+process.stdin.on("data", chunk => input += chunk);
+process.stdin.on("end", () => {
+    const server = JSON.parse(input).find(item => item.name === "pitbox" && item.enabled);
+    if (!server?.transport?.env?.PLUGIN_ROOT) process.exit(1);
+    process.stdout.write(server.transport.env.PLUGIN_ROOT);
+});
+')"
+    diff -qr --exclude=.in_use plugin "$cache"
 }
 
-claude_cache="$(get_claude_cache)" || { echo "pitbox@pitbox must be installed and enabled in Claude" >&2; exit 1; }
-codex_cache="$(get_codex_cache)" || { echo "The plugin-managed pitbox MCP server must be enabled in Codex" >&2; exit 1; }
+update_cli() {
+    local cli_target="${PITBOX_CLI_TARGET:-$HOME/.local/bin/pitbox}"
+    install -D -m 755 bin/pitbox "$cli_target"
+    cmp -s bin/pitbox "$cli_target"
+    echo "Updated the standalone CLI at $cli_target to pitbox $version"
+}
 
-installed_claude_version="$(node -p 'require(process.argv[1]).version' "$claude_cache/plugin.json")"
-installed_codex_version="$(node -p 'require(process.argv[1]).version' "$codex_cache/plugin.json")"
+if wanted claude; then update_claude; fi
+if wanted codex; then update_codex; fi
+if wanted cli; then update_cli; fi
 
-if [[ "$version" == "$installed_claude_version" ]] && ! diff -qr --exclude=.in_use plugin "$claude_cache" >/dev/null; then
-    echo "Claude has version $version with different files. Bump the plugin version before publishing changes." >&2
-    exit 1
+if [[ -n "$only" ]]; then
+    echo "Updated pitbox $version target: $only"
+else
+    echo "Updated pitbox $version targets (claude, codex, cli). Start new agent sessions to load the updated plugin."
 fi
-if [[ "$version" == "$installed_codex_version" ]] && ! diff -qr --exclude=.in_use plugin "$codex_cache" >/dev/null; then
-    echo "Codex has version $version with different files. Bump the plugin version before publishing changes." >&2
-    exit 1
-fi
-
-claude plugin validate plugin --strict
-codex plugin marketplace upgrade pitbox
-codex plugin add pitbox@pitbox
-claude plugin marketplace update pitbox
-claude plugin update pitbox@pitbox
-
-claude_cache="$(get_claude_cache)"
-codex_cache="$(get_codex_cache)"
-diff -qr --exclude=.in_use plugin "$claude_cache"
-diff -qr --exclude=.in_use plugin "$codex_cache"
-
-cli_target="${PITBOX_CLI_TARGET:-$HOME/.local/bin/pitbox}"
-install -D -m 755 bin/pitbox "$cli_target"
-cmp -s bin/pitbox "$cli_target"
-
-echo "Updated Codex, Claude and $cli_target to pitbox $version. Start new agent sessions to load the updated plugin."

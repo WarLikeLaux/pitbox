@@ -1,7 +1,7 @@
 {
   "name": "pitbox",
   "displayName": "pitbox",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "description": "Handoff and integration protocol for parallel coding agents on a reusable worktree pool: MCP tools and one workflow skill for slot and integrator modes.",
   "author": { "name": "WarLikeLaux", "url": "https://github.com/WarLikeLaux" },
   "repository": "https://github.com/WarLikeLaux/pitbox",

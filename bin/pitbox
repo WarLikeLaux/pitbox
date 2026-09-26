@@ -2,12 +2,19 @@
 # pitbox: fixed pool of git worktree slots for parallel agent tasks.
 #
 # Global tool, repo-specific behavior lives in .pitbox/ inside each repository:
-#   .pitbox/config       shell vars, e.g. MAIN_BRANCH=custom
+#   .pitbox/config       shell vars: MAIN_BRANCH, READY_MODE, EVIDENCE, REQUIRE_PUSH
 #   .pitbox/setup.sh     called with the slot dir as $1 after worktree add and on release
 #   .pitbox/release.sh   optional, called with the slot dir as $1 on release
+#
+# Slot state lives in the common git dir, shared by every worktree:
+#   pitbox/slots/<name>.path       registered worktree path of the slot
+#   pitbox/slots/<name>.ready      readiness marker (branch, commit, notes)
+#   pitbox/slots/<name>.collected  set after the branch was merged by collect
+#
+# Requires git 2.31+ (--path-format) and bash.
 set -Eeuo pipefail
 
-VERSION="0.3.4"
+VERSION="0.4.0"
 
 usage() {
     cat <<EOF
@@ -17,22 +24,35 @@ Usage (run anywhere inside the repository):
   pitbox init [--stack S] [--force]   Write .pitbox/ templates
   pitbox setup [N]              Create slot worktrees wt1..wtN (default 3), run .pitbox/setup.sh in each
   pitbox claim [slot|branch-name] [branch-name]  Book a free slot and create the task branch (auto-picks a slot)
-  pitbox status                 Show slots: branch, dirty files, commits ahead of main, readiness
-  pitbox ready <slot> [note]    Mark the slot's task ready (writes TASK_READY.md, refuses dirty or empty slots)
+  pitbox status                 Show slots: branch, dirty files, commits ahead of main, state, policy
+  pitbox ready <slot> [note]    Mark the slot's task ready (refuses dirty or empty slots)
   pitbox collect <slot|ready>   Merge the slot branch into the main branch (--no-ff)
   pitbox release <slot>         Reset the slot to main, delete the merged branch, run release hooks
-  pitbox guide                  Print the workflow rules for agents
+  pitbox guide                  Print the workflow rules for this repository, rendered from .pitbox/config
   pitbox mcp                    Start the MCP server (needs the mcp/server.mjs from the repository)
   pitbox version                Print the version
   pitbox help                   Show this help
 
 Repository configuration (committed alongside the code):
-  .pitbox/config                shell vars: MAIN_BRANCH=<branch>, REQUIRE_PUSH=1 demands pushed branches on ready
+  .pitbox/config                shell vars:
+                                  MAIN_BRANCH=<branch>
+                                  READY_MODE=auto|confirm   auto: commit and mark ready without waiting
+                                                            for review (default). confirm: commit always,
+                                                            mark ready only after user confirmation.
+                                  EVIDENCE=auto|screenshot|requests|none
+                                                            what slot agents show as proof of work (default auto)
+                                  REQUIRE_PUSH=1            demand pushed branches on ready
+                                  INTEGRATE_CHECKS=auto|full|ci
+                                                            auto (default): run the repository's full checks
+                                                            only after a merge with manually resolved
+                                                            conflicts. full: always before deploy.
+                                                            ci: never locally, push and let CI verify.
   .pitbox/setup.sh              install deps in a fresh slot (bun install, composer install, ...)
   .pitbox/release.sh            extra cleanup on release (defaults to setup.sh)
 
-Readiness marker: TASK_READY.md in the slot root. pitbox ignores it in its own dirty checks, a global git ignore is optional comfort.
-The user's word always overrides the marker.
+In slot mode the .pitbox/config delivery policy overrides the repository's AGENTS.md delivery
+rules. AGENTS.md still defines checks and deploy commands for the integrator. pitbox never
+reads or edits AGENTS.md. The user's word always overrides the marker.
 EOF
 }
 
@@ -43,14 +63,63 @@ main_worktree() {
     git worktree list --porcelain | sed -n 's/^worktree //p' | head -1
 }
 
+git_common_dir() {
+    git -C "$1" rev-parse --path-format=absolute --git-common-dir
+}
+
+state_dir() {
+    echo "$(git_common_dir "$1")/pitbox/slots"
+}
+
+marker_file() {
+    echo "$(state_dir "$1")/$2.ready"
+}
+
+collected_file() {
+    echo "$(state_dir "$1")/$2.collected"
+}
+
+conflict_file() {
+    echo "$(state_dir "$1")/$2.conflict"
+}
+
+registry_file() {
+    echo "$(state_dir "$1")/$2.path"
+}
+
+lock_dir() {
+    echo "$(git_common_dir "$1")/pitbox/claim.lock"
+}
+
 load_config() {
     local root="$1"
     MAIN_BRANCH=""
+    READY_MODE="auto"
+    EVIDENCE="auto"
     if [[ -f "$root/.pitbox/config" ]]; then
         # shellcheck disable=SC1091
         source "$root/.pitbox/config"
     fi
     REQUIRE_PUSH="${REQUIRE_PUSH:-0}"
+    READY_MODE="${READY_MODE:-auto}"
+    EVIDENCE="${EVIDENCE:-auto}"
+    INTEGRATE_CHECKS="${INTEGRATE_CHECKS:-auto}"
+    case "$READY_MODE" in
+        auto|confirm) ;;
+        *) die "invalid READY_MODE: $READY_MODE (supported: auto, confirm)" ;;
+    esac
+    case "$EVIDENCE" in
+        auto|screenshot|requests|none) ;;
+        *) die "invalid EVIDENCE: $EVIDENCE (supported: auto, screenshot, requests, none)" ;;
+    esac
+    case "$INTEGRATE_CHECKS" in
+        auto|full|ci) ;;
+        *) die "invalid INTEGRATE_CHECKS: $INTEGRATE_CHECKS (supported: auto, full, ci)" ;;
+    esac
+    case "$REQUIRE_PUSH" in
+        0|1) ;;
+        *) die "invalid REQUIRE_PUSH: $REQUIRE_PUSH (supported: 0, 1)" ;;
+    esac
     if [[ -z "${MAIN_BRANCH}" ]]; then
         MAIN_BRANCH="$(git -C "$root" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')" || MAIN_BRANCH=""
     fi
@@ -58,11 +127,61 @@ load_config() {
         MAIN_BRANCH="$(git -C "$root" branch --show-current)"
     fi
     [[ -n "${MAIN_BRANCH}" ]] || die "cannot determine the main branch, set MAIN_BRANCH in .pitbox/config"
+    bootstrap_slots "$root"
+}
+
+register_slot() {
+    local root="$1" name="$2" dir="$3"
+    mkdir -p "$(state_dir "$root")"
+    echo "$dir" > "$(registry_file "$root" "$name")"
+}
+
+# Pre-0.4 pools kept slots as sibling directories with no registry. Register any
+# sibling worktree matching the old naming once, then the registry is the only source.
+bootstrap_slots() {
+    local root="$1" state base bn name wt
+    state="$(state_dir "$root")"
+    if [[ -d "$state" ]] && compgen -G "$state/*.path" >/dev/null; then
+        return 0
+    fi
+    base="$(basename "$root")"
+    while IFS= read -r wt; do
+        bn="$(basename "$wt")"
+        if [[ "$bn" =~ ^${base}-wt[0-9]+$ ]]; then
+            name="${bn#"$base"-}"
+            register_slot "$root" "$name" "$wt"
+        fi
+    done < <(git -C "$root" worktree list --porcelain | sed -n 's/^worktree //p')
+}
+
+slot_names() {
+    local root="$1" state f
+    state="$(state_dir "$root")"
+    [[ -d "$state" ]] || return 0
+    for f in "$state"/*.path; do
+        [[ -f "$f" ]] || continue
+        basename "$f" .path
+    done | sort -V
 }
 
 slot_dir() {
-    local root="$1" name="$2"
-    echo "$(dirname "$root")/$(basename "$root")-$name"
+    local root="$1" name="$2" f
+    f="$(registry_file "$root" "$name")"
+    [[ -f "$f" ]] || return 0
+    cat "$f"
+}
+
+slot_state() {
+    local root="$1" name="$2" dir="$3"
+    if [[ -z "$dir" || ! -d "$dir" ]]; then
+        echo "missing"
+    elif [[ -f "$(collected_file "$root" "$name")" ]]; then
+        echo "collected"
+    elif [[ -f "$(marker_file "$root" "$name")" ]]; then
+        echo "ready"
+    else
+        echo "work"
+    fi
 }
 
 run_hook() {
@@ -74,31 +193,74 @@ run_hook() {
 }
 
 dirty_count() {
-    git -C "$1" status --porcelain -- . ':(exclude)TASK_READY.md' | wc -l | tr -d ' '
+    local out
+    out="$(git -C "$1" status --porcelain -- . ':(exclude)TASK_READY.md' 2>/dev/null)" || { echo "?"; return 0; }
+    if [[ -z "$out" ]]; then
+        echo 0
+    else
+        printf '%s\n' "$out" | wc -l | tr -d ' '
+    fi
 }
 
-common_git_dir() {
-    git -C "$1" rev-parse --path-format=absolute --git-common-dir
+# A pre-0.4 readiness marker is an untracked TASK_READY.md in the slot root.
+# Import it into the pitbox state once, then the state dir is the only marker.
+import_legacy_marker() {
+    local root="$1" name="$2" dir="$3" marker legacy branch commit updated notes
+    marker="$(marker_file "$root" "$name")"
+    if [[ -f "$marker" ]]; then
+        return 0
+    fi
+    legacy="$dir/TASK_READY.md"
+    if [[ ! -f "$legacy" ]]; then
+        return 0
+    fi
+    branch="$(sed -n 's/^branch: //p' "$legacy")"
+    commit="$(sed -n 's/^commit: //p' "$legacy")"
+    updated="$(sed -n 's/^updated: //p' "$legacy")"
+    notes="$(sed -n 's/^notes: //p' "$legacy")"
+    mkdir -p "$(state_dir "$root")"
+    {
+        echo "branch: $branch"
+        echo "slot: $name"
+        echo "commit: $commit"
+        echo "updated: ${updated:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+        echo "notes: ${notes:-none}"
+    } > "$marker"
+    rm -f "$legacy"
+    echo "pitbox: imported legacy TASK_READY.md for $name into the pitbox state"
 }
 
-slot_names() {
-    local root="$1"
-    local base
-    base="$(basename "$root")"
-    for d in "$(dirname "$root")"/"$base"-wt*; do
-        [[ -d "$d" ]] && basename "$d" | sed 's/.*-//'
-    done
+acquire_lock() {
+    local lock="$1" pid
+    mkdir -p "$(dirname "$lock")"
+    if mkdir "$lock" 2>/dev/null; then
+        echo $$ > "$lock/pid"
+        return 0
+    fi
+    pid="$(cat "$lock/pid" 2>/dev/null || true)"
+    if [[ -z "$pid" ]] || ! ps -p "$pid" >/dev/null 2>&1; then
+        echo "pitbox: stealing stale claim lock from dead process ${pid:-unknown}" >&2
+        rm -rf "$lock"
+        if mkdir "$lock" 2>/dev/null; then
+            echo $$ > "$lock/pid"
+            return 0
+        fi
+    fi
+    die "another claim is in progress (pid ${pid:-unknown}), remove $lock if it is stale"
 }
 
 claim_one() {
     local root="$1" name="$2" branch="$3" dir cur slot_head main_head dirty
     dir="$(slot_dir "$root" "$name")"
-    [[ -d "$dir" ]] || die "no such slot: $name"
+    [[ -n "$dir" && -d "$dir" ]] || die "no such slot: $name"
     cur="$(git -C "$dir" branch --show-current)"
     [[ "$cur" == "slot/$name" ]] || die "slot $name is busy on $cur, pick another slot"
     dirty="$(dirty_count "$dir")"
     [[ "$dirty" == 0 ]] || die "slot $name has $dirty uncommitted files, clean it before claiming"
-    [[ ! -f "$dir/TASK_READY.md" ]] || die "slot $name has a stale readiness marker, release it before claiming"
+    import_legacy_marker "$root" "$name" "$dir"
+    [[ ! -f "$(marker_file "$root" "$name")" ]] || die "slot $name has a stale readiness marker, release it before claiming"
+    # A collected marker without a release is stale by definition, claiming clears it.
+    rm -f "$(collected_file "$root" "$name")"
     slot_head="$(git -C "$dir" rev-parse HEAD)"
     main_head="$(git -C "$root" rev-parse "$MAIN_BRANCH")"
     if [[ "$slot_head" != "$main_head" ]]; then
@@ -127,9 +289,9 @@ cmd_claim() {
     esac
     [[ -n "$name" ]] || name="task/$(date -u +%Y%m%d-%H%M%S)"
     # Deliberately global so the single-quoted EXIT trap below still sees it.
-    lock="$(common_git_dir "$root")/pitbox-claim.lock"
-    mkdir "$lock" 2>/dev/null || die "another claim is in progress, remove $lock if it is stale"
-    trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+    lock="$(lock_dir "$root")"
+    acquire_lock "$lock"
+    trap 'rm -rf "$lock" 2>/dev/null || true' EXIT
     if [[ -n "$want" ]]; then
         claim_one "$root" "$want" "$name"
     else
@@ -155,41 +317,49 @@ cmd_setup() {
     load_config "$root"
     count="${1:-3}"
     [[ "$count" =~ ^[0-9]+$ ]] || die "setup takes a number, got: $count"
+    lock="$(lock_dir "$root")"
+    acquire_lock "$lock"
+    trap 'rm -rf "$lock" 2>/dev/null || true' EXIT
     for i in $(seq 1 "$count"); do
         name="wt$i"
-        dir="$(slot_dir "$root" "$name")"
+        dir="$(dirname "$root")/$(basename "$root")-$name"
         if [[ -d "$dir" ]]; then
             echo "pitbox: $name already exists at $dir"
-            continue
-        fi
-        if git -C "$root" rev-parse --verify --quiet "refs/heads/slot/$name" >/dev/null; then
-            git -C "$root" worktree add "$dir" "slot/$name"
         else
-            git -C "$root" worktree add -b "slot/$name" "$dir" "$MAIN_BRANCH"
+            if git -C "$root" rev-parse --verify --quiet "refs/heads/slot/$name" >/dev/null; then
+                git -C "$root" worktree add "$dir" "slot/$name"
+            else
+                git -C "$root" worktree add -b "slot/$name" "$dir" "$MAIN_BRANCH"
+            fi
+            run_hook "$root" "setup.sh" "$dir"
         fi
-        run_hook "$root" "setup.sh" "$dir"
+        register_slot "$root" "$name" "$dir"
     done
 }
 
 cmd_status() {
-    local root name dir branch dirty ahead ready
+    local root name dir branch dirty ahead state any=0
     root="$(main_worktree)"
     load_config "$root"
-    echo "main branch: $MAIN_BRANCH    main worktree: $(main_worktree)"
-    printf '%-6s %-28s %-7s %-7s %-7s %s\n' "slot" "branch" "dirty" "ahead" "ready" "path"
-    local any=0
+    echo "main branch: $MAIN_BRANCH    main worktree: $root"
+    echo "policy: ready=$READY_MODE evidence=$EVIDENCE push=$( [[ "$REQUIRE_PUSH" == "1" ]] && echo on || echo off ) checks=$INTEGRATE_CHECKS"
+    printf '%-6s %-28s %-7s %-7s %-7s %-10s %s\n' "slot" "branch" "dirty" "ahead" "state" "path"
     for name in $(slot_names "$root"); do
         any=1
         dir="$(slot_dir "$root" "$name")"
-        branch="$(git -C "$dir" branch --show-current)"
-        dirty="$(dirty_count "$dir")"
-        ahead="$(git -C "$dir" rev-list --count "$MAIN_BRANCH..HEAD" 2>/dev/null || echo '?')"
-        if [[ -f "$dir/TASK_READY.md" ]]; then
-            ready="yes"
-        else
-            ready="no"
+        if [[ -n "$dir" && -d "$dir" ]]; then
+            import_legacy_marker "$root" "$name" "$dir"
         fi
-        printf '%-6s %-28s %-7s %-7s %-7s %s\n' "$name" "$branch" "$dirty" "$ahead" "$ready" "$dir"
+        state="$(slot_state "$root" "$name" "$dir")"
+        branch="?"
+        dirty="?"
+        ahead="?"
+        if [[ "$state" != "missing" ]]; then
+            branch="$(git -C "$dir" branch --show-current 2>/dev/null)" || branch="?"
+            dirty="$(dirty_count "$dir")"
+            ahead="$(git -C "$dir" rev-list --count "$MAIN_BRANCH..HEAD" 2>/dev/null)" || ahead="?"
+        fi
+        printf '%-6s %-28s %-7s %-7s %-7s %-10s %s\n' "$name" "$branch" "$dirty" "$ahead" "$state" "${dir:-unknown}"
     done
     [[ "$any" == 1 ]] || echo "no slots yet, run: pitbox setup"
 }
@@ -203,7 +373,8 @@ cmd_ready() {
     note="$*"
     [[ -n "$name" ]] || die "usage: pitbox ready <slot> [note]"
     dir="$(slot_dir "$root" "$name")"
-    [[ -d "$dir" ]] || die "no such slot: $name"
+    [[ -n "$dir" && -d "$dir" ]] || die "no such slot: $name"
+    import_legacy_marker "$root" "$name" "$dir"
     branch="$(git -C "$dir" branch --show-current)"
     [[ "$branch" != "slot/$name" ]] || die "slot $name has no task branch, create one before marking ready"
     dirty="$(dirty_count "$dir")"
@@ -216,54 +387,107 @@ cmd_ready() {
     fi
     ahead="$(git -C "$dir" rev-list --count "$MAIN_BRANCH..HEAD")"
     [[ "$ahead" != 0 ]] || die "slot $name has no commits ahead of $MAIN_BRANCH"
-    cat > "$dir/TASK_READY.md" <<EOF
+    mkdir -p "$(state_dir "$root")"
+    cat > "$(marker_file "$root" "$name")" <<EOF
 branch: $branch
 slot: $name
 commit: $(git -C "$dir" rev-parse HEAD)
 updated: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 notes: ${note:-none}
 EOF
+    # Re-readying after a collection (feedback round) re-arms the slot.
+    rm -f "$(collected_file "$root" "$name")"
     echo "pitbox: $name marked ready ($branch, $ahead commits ahead of $MAIN_BRANCH)"
+    if [[ "$READY_MODE" == "confirm" ]]; then
+        echo "pitbox: policy READY_MODE=confirm, mark ready only after the user confirmed the result"
+    fi
 }
 
 cmd_collect() {
-    local root target name dir branch main
+    local root target name dir any=0
     root="$(main_worktree)"
     load_config "$root"
     target="${1:-}"
     [[ -n "$target" ]] || die "usage: pitbox collect <slot|ready>"
-    main="$(main_worktree)"
     collect_one() {
         local name="$1" marked="$2" dir branch mb dmain mbranch mcommit cur
         dir="$(slot_dir "$root" "$name")"
-        [[ -d "$dir" ]] || die "no such slot: $name"
+        if [[ -z "$dir" || ! -d "$dir" ]]; then
+            echo "pitbox: skipping $name (missing slot directory)"
+            return 0
+        fi
         branch="$(git -C "$dir" branch --show-current)"
         if [[ "$branch" == "slot/$name" ]]; then
             echo "pitbox: skipping $name (no task branch)"
             return 0
         fi
-        mb="$(git -C "$main" branch --show-current)"
+        if [[ -f "$(collected_file "$root" "$name")" ]]; then
+            echo "pitbox: $name already collected, run: pitbox release $name"
+            return 0
+        fi
+        mb="$(git -C "$root" branch --show-current)"
         [[ "$mb" == "$MAIN_BRANCH" ]] || die "main worktree is on $mb, collect merges into $MAIN_BRANCH, switch it first"
-        dmain="$(dirty_count "$main")"
+        dmain="$(dirty_count "$root")"
         [[ "$dmain" == 0 ]] || die "main checkout has $dmain uncommitted files, clean it before collecting"
-        if [[ -f "$dir/TASK_READY.md" ]]; then
-            mbranch="$(sed -n 's/^branch: //p' "$dir/TASK_READY.md")"
-            mcommit="$(sed -n 's/^commit: //p' "$dir/TASK_READY.md")"
+        import_legacy_marker "$root" "$name" "$dir"
+        if [[ -f "$(marker_file "$root" "$name")" ]]; then
+            mbranch="$(sed -n 's/^branch: //p' "$(marker_file "$root" "$name")")"
+            mcommit="$(sed -n 's/^commit: //p' "$(marker_file "$root" "$name")")"
             cur="$(git -C "$dir" rev-parse HEAD)"
             [[ "$mbranch" == "$branch" ]] || die "slot $name switched from $mbranch to $branch after being marked ready"
             if [[ -n "$mcommit" && "$mcommit" != "$cur" ]]; then
                 die "slot $name changed after being marked ready ($mcommit, now $cur), re-run pitbox ready $name"
             fi
         elif [[ -z "$marked" ]]; then
-            echo "pitbox: warning: $name has no TASK_READY.md, collecting anyway (the user's word overrides the marker)"
+            echo "pitbox: warning: $name has no readiness marker, collecting anyway (the user's word overrides the marker)"
         fi
         echo "pitbox: merging $branch from $name into $MAIN_BRANCH"
-        git -C "$main" merge --no-ff "$branch" -m "Merge $branch from $name"
+        if ! git -C "$root" merge --no-ff "$branch" -m "Merge $branch from $name"; then
+            mkdir -p "$(state_dir "$root")"
+            {
+                echo "conflicts: unresolved"
+                echo "commit: $(git -C "$dir" rev-parse HEAD)"
+            } > "$(conflict_file "$root" "$name")"
+            die "merge of $branch stopped with conflicts, resolve them in the main checkout, commit, then re-run this collect and continue with the remaining slots"
+        fi
+        local conflicted=0
+        if [[ -f "$(conflict_file "$root" "$name")" && "$(sed -n 's/^commit: //p' "$(conflict_file "$root" "$name")")" == "$(git -C "$dir" rev-parse HEAD)" ]]; then
+            conflicted=1
+        fi
+        mkdir -p "$(state_dir "$root")"
+        {
+            echo "branch: $branch"
+            echo "slot: $name"
+            echo "commit: $(git -C "$root" rev-parse HEAD)"
+            echo "updated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            if [[ "$conflicted" == 1 ]]; then
+                echo "conflicts: resolved"
+            fi
+        } > "$(collected_file "$root" "$name")"
+        rm -f "$(marker_file "$root" "$name")" "$(conflict_file "$root" "$name")"
+        if [[ "$conflicted" == 1 ]]; then
+            echo "pitbox: $name merged with manually resolved conflicts, the resolution code was never tested, run the repository's full checks before deploy"
+        fi
+        case "$INTEGRATE_CHECKS" in
+            ci)
+                echo "pitbox: $name collected, push and let CI verify the merged main, deploy when green, then: pitbox release $name"
+                ;;
+            full)
+                echo "pitbox: $name collected, run the full checks, deploy, push, then: pitbox release $name"
+                ;;
+            *)
+                if [[ "$conflicted" == 1 ]]; then
+                    echo "pitbox: $name collected, run the full checks first, then deploy, push, and: pitbox release $name"
+                else
+                    echo "pitbox: $name collected cleanly, push and run: pitbox release $name (deploy after CI is green, or now without CI)"
+                fi
+                ;;
+        esac
     }
     if [[ "$target" == "ready" ]]; then
-        local any=0
         for name in $(slot_names "$root"); do
-            if [[ -f "$(slot_dir "$root" "$name")/TASK_READY.md" ]]; then
+            dir="$(slot_dir "$root" "$name")"
+            if [[ -n "$dir" && ( -f "$(marker_file "$root" "$name")" || -f "$(collected_file "$root" "$name")" || -f "$dir/TASK_READY.md" ) ]]; then
                 any=1
                 collect_one "$name" 1
             fi
@@ -275,13 +499,19 @@ cmd_collect() {
 }
 
 cmd_release() {
-    local root name dir branch
+    local root name dir branch marker collected
     root="$(main_worktree)"
     load_config "$root"
     name="${1:-}"
     [[ -n "$name" ]] || die "usage: pitbox release <slot>"
     dir="$(slot_dir "$root" "$name")"
-    [[ -d "$dir" ]] || die "no such slot: $name"
+    [[ -n "$dir" && -d "$dir" ]] || die "no such slot: $name"
+    import_legacy_marker "$root" "$name" "$dir"
+    marker="$(marker_file "$root" "$name")"
+    collected="$(collected_file "$root" "$name")"
+    if [[ -f "$marker" && ! -f "$collected" ]]; then
+        echo "pitbox: warning: $name was ready but never collected, make sure the branch was merged"
+    fi
     branch="$(git -C "$dir" branch --show-current)"
     git -C "$dir" checkout -B "slot/$name" "$MAIN_BRANCH"
     if [[ "$branch" != "slot/$name" ]]; then
@@ -291,7 +521,7 @@ cmd_release() {
             echo "pitbox: branch $branch is not fully merged, keeping it"
         fi
     fi
-    rm -f "$dir/TASK_READY.md"
+    rm -f "$marker" "$collected" "$(conflict_file "$root" "$name")" "$dir/TASK_READY.md"
     if [[ -f "$root/.pitbox/release.sh" ]]; then
         run_hook "$root" "release.sh" "$dir"
     else
@@ -312,8 +542,17 @@ cmd_mcp() {
 }
 
 cmd_guide() {
-    cat <<'EOF'
+    local root push_label="off"
+    root="$(main_worktree)"
+    load_config "$root"
+    if [[ "$REQUIRE_PUSH" == "1" ]]; then
+        push_label="on"
+    fi
+    cat <<EOF
 pitbox workflow guide
+
+policy: ready=$READY_MODE evidence=$EVIDENCE push=$push_label checks=$INTEGRATE_CHECKS
+Source of truth: in slot mode this policy overrides the repository's AGENTS.md delivery rules. AGENTS.md still defines checks and deploy commands for the integrator. pitbox never reads or edits AGENTS.md.
 
 Modes:
 - One task: work directly in the main checkout.
@@ -322,19 +561,50 @@ Modes:
 Slot agents:
 - Start with: pitbox claim [branch-name]. It books a free slot atomically and creates your task branch in it. Pass a slot number only if the user specified one.
 - Never pick a slot from status and create branches by hand, two agents can race for the same slot.
-- Verify inside the slot, commit only the task files, then run pitbox ready <slot> [notes]. Do not wait for user acceptance before committing or marking ready. For visual work, capture a screenshot from a local preview (for example with Playwright) and display it in the result. A localhost link alone is not reviewable for a remote user. ready refuses dirty, empty, or unpushed slots when REQUIRE_PUSH=1. It only records a handoff and never starts collection or deployment.
-- If the user gives feedback on the same ready task before collection, stay in that slot, commit the fix, and run ready again. For a new task after collection and release, check status and run pitbox claim without a slot number. Work in the path returned by claim. The user does not choose a slot. A separate new task before collection also needs its own free slot.
+- Verify inside the slot, commit only the task files, then run pitbox ready <slot> [notes]. ready records a handoff marker and never merges, deploys, or starts collection.
+EOF
+    if [[ "$READY_MODE" == "confirm" ]]; then
+        echo "- Commit your work as soon as it is verified. Run pitbox ready only after the user explicitly confirms the result."
+    else
+        echo "- Commit and mark ready as soon as your checks pass. Do not wait for user review or approval, the user reviews the ready slot and asks for collection when satisfied."
+    fi
+    case "$EVIDENCE" in
+        screenshot)
+            echo "- Prove visual work with a screenshot from the local preview, displayed in the result. A localhost link alone is not reviewable for a remote user."
+            ;;
+        requests)
+            echo "- Prove the change with a request and response example (curl or test output) in the result."
+            ;;
+        none)
+            echo "- Describe in text what you changed and how you verified it."
+            ;;
+        auto)
+            echo "- Prove the result: a screenshot from the local preview for UI work, a request and response example (curl or test output) for backend work, a short written description for logic or config. A localhost link alone is not reviewable for a remote user."
+            ;;
+    esac
+    cat <<'EOF'
+- If the user gives feedback on the same ready task before collection, stay in that slot, commit the fix, and run ready again. For a new task after collection and release, check status and run pitbox claim without a slot number. A separate new task before collection also needs its own free slot.
 - Never merge into the main branch, never deploy, never touch other slots.
 
 Integrator (only on the user's explicit command, never just because a slot is ready):
-- pitbox status, then collect ready slots: pitbox collect <slot|ready>
+- pitbox status, then collect ready slots: pitbox collect <slot|ready>. Collected slots are skipped until released.
 - collect refuses when the main worktree is off the main branch, when it is dirty, or when a slot changed after its marker.
-- Run the repository's full checks, then deploy once following the repository's AGENTS.md.
-- Push the main branch, then pitbox release <slot> for each collected slot.
+EOF
+    if [[ "$INTEGRATE_CHECKS" == "ci" ]]; then
+        echo "- Checks belong to CI: push the merged main and let CI verify it instead of running the full suite locally. If CI is red, fix forward or revert before new slots claim from main."
+        echo "- Deploy once when CI is green, following the repository's AGENTS.md. Releasing the slots right after the push is fine, hold them until green only if a red main would poison new tasks."
+    elif [[ "$INTEGRATE_CHECKS" == "full" ]]; then
+        echo "- Run the repository's full checks, then deploy once following the repository's AGENTS.md."
+        echo "- Push the main branch, then pitbox release <slot> for each collected slot."
+    else
+        echo "- Clean merges need no local full run: the slot agents verified their branches and a clean merge adds no untested code. Push the main branch and release the slots right away, the pool never waits for CI. Deploy once per the repository's AGENTS.md, after CI is green when one exists, straight away otherwise."
+        echo "- When collect reports a slot merged with manually resolved conflicts, run the repository's full checks before deploy. The resolution code was never tested anywhere."
+    fi
+    cat <<'EOF'
 
 Rules:
-- The user's word always overrides the TASK_READY.md marker.
-- In slot mode, defer repository deploy-before-commit requirements to the integrator. Repository pre-commit visual acceptance gates do not apply to slot handoff. Neither blocks a verified slot from being committed and marked ready. User feedback can be handled as a follow-up fix. Direct work in the main checkout follows the repository's normal delivery order.
+- The user's word always overrides the marker.
+- In slot mode, defer repository deploy-before-commit requirements to the integrator. Slot agents verify, commit, and mark work ready per the policy above. User feedback can be handled as a follow-up fix. Direct work in the main checkout follows the repository's normal delivery order.
 - A request to collect ready slots already authorizes collection. Do not ask for a second confirmation.
 - If collect is refused for any reason, report it, do not force.
 - Repository specifics: AGENTS.md in the repo root and the .pitbox/ hooks.
@@ -355,6 +625,18 @@ template_config() {
 # pitbox configuration
 # Main branch for slots; leave commented to autodetect (origin/HEAD, else current branch).
 # MAIN_BRANCH=main
+# Slot delivery policy. In slot mode it overrides the repository's AGENTS.md delivery rules.
+# READY_MODE=auto                          auto (default): commit and mark ready without waiting
+#                                          for review. confirm: commit always, mark ready only
+#                                          after the user confirms the result.
+# EVIDENCE=auto                            auto (default): screenshot for UI work, request and
+#                                          response example for backend work, text for logic.
+#                                          Other values: screenshot, requests, none.
+# REQUIRE_PUSH=1                           demand pushed task branches on ready
+# INTEGRATE_CHECKS=auto                    auto (default): run the full checks only after a merge
+#                                          with manually resolved conflicts, clean merges go
+#                                          straight to deploy and push. full: always run them
+#                                          before deploy. ci: push and let CI be the gate.
 EOF
 }
 

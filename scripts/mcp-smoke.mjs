@@ -51,10 +51,12 @@ function notification(method) {
 }
 
 const init = await request("initialize", {
-    protocolVersion: "2025-06-18",
+    protocolVersion: "9999.99.99-does-not-exist",
     capabilities: {},
     clientInfo: { name: "pitbox-smoke", version: "0.0.0" },
 });
+// The server reports its own supported protocol version, it never echoes the client's.
+assert.equal(init.result.protocolVersion, "2025-06-18");
 assert.equal(init.result.serverInfo.name, "pitbox-mcp");
 assert.ok(typeof init.result.instructions === "string" && init.result.instructions.includes("pitbox"), "missing server instructions");
 assert.ok(init.result.instructions.includes("repo"));
@@ -66,16 +68,19 @@ for (const expected of ["guide", "status", "claim", "setup", "ready", "collect",
     assert.ok(names.includes(expected), `missing tool ${expected}`);
 }
 assert.ok(list.result.tools.every((t) => t.inputSchema && t.description.length > 40));
-for (const tool of list.result.tools.filter((tool) => tool.name !== "guide")) {
+for (const tool of list.result.tools) {
     assert.ok(tool.inputSchema.required.includes("repo"), `${tool.name} must require repo`);
 }
 
-const guide = await request("tools/call", { name: "guide", arguments: {} });
+const guide = await request("tools/call", { name: "guide", arguments: { repo } });
 assert.equal(guide.result.isError, false);
 assert.ok(guide.result.content[0].text.includes("pitbox workflow guide"));
 
 const missingRepo = await request("tools/call", { name: "status", arguments: {} });
 assert.equal(missingRepo.result.isError, true);
+
+const bogusRepo = await request("tools/call", { name: "guide", arguments: { repo: "not/absolute" } });
+assert.equal(bogusRepo.result.isError, true);
 
 const status = await request("tools/call", { name: "status", arguments: { repo } });
 assert.equal(status.result.isError, false);

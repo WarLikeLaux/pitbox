@@ -10,7 +10,7 @@
         "path": "./plugin",
         "ref": "main"
       },
-      "description": "pitbox slot workflow: MCP tools plus the integrate skill",
+      "description": "pitbox slot workflow: MCP tools plus one workflow skill",
       "category": "mcp",
       "policy": { "installation": "AVAILABLE" }
     }
