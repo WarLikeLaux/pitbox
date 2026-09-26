@@ -27,7 +27,7 @@ integrator only       agent + task branch  agent + task branch  spare
 
 - One task: work directly in the main checkout, no slots involved.
 - Two or three parallel tasks: one slot each, the main checkout belongs to the integrator.
-- A slot agent books a slot with `pitbox claim` (it atomically reserves a free slot and creates the task branch), verifies inside the slot, commits, pushes, then marks the slot ready.
+- A slot agent books a slot with `pitbox claim` (it atomically reserves a free slot and creates the task branch), verifies inside the slot, follows the repository's approval rules for commits and pushes, then marks the committed task branch ready.
 - The integrator collects ready slots, runs the repository's full checks, deploys, pushes, and releases the slots back to the pool.
 
 ## Quick start
@@ -43,7 +43,7 @@ Prepare a repository once:
 
 ```bash
 cd your-repo
-pitbox init      # writes .slots/ templates, auto-detects bun or php + docker
+pitbox init      # writes .pitbox/ templates, auto-detects bun or php + docker
 pitbox setup     # creates ../your-repo-wt1 .. wt3 and installs dependencies in each
 ```
 
@@ -58,7 +58,7 @@ Everyday commands:
 
 | Command | What it does |
 |---------|--------------|
-| `pitbox init [--stack S] [--force]` | Write `.slots/` templates for this repository (stacks: `bun`, `php-docker`, auto-detected) |
+| `pitbox init [--stack S] [--force]` | Write `.pitbox/` templates for this repository (stacks: `bun`, `php-docker`, auto-detected) |
 | `pitbox setup [N]` | Create the slot pool, default three slots |
 | `pitbox claim [slot] [name]` | Atomically book a free slot and create the task branch in it (auto-picks when the slot is omitted) |
 | `pitbox status` | Branch, dirty files, commits ahead of main, readiness per slot |
@@ -98,7 +98,7 @@ command = "node"
 args = ["/path/to/pitbox/mcp/server.mjs"]
 ```
 
-The server resolves the repository from the client's working directory, so run your agent inside the repository as usual. At connect it also injects workflow instructions into the session: an uninitialized repository gets the onboarding steps (run init, commit `.slots/`, run setup), an initialized one gets the role split and the task lifecycle.
+Plugin hosts may start the MCP server inside a plugin cache. Every repository tool therefore requires `repo`, the absolute path to the target repository or worktree. At connect, the server injects the onboarding and task lifecycle instructions. For a new repository, call `init` with `repo`, review and commit `.pitbox/`, then call `setup` with the same `repo`.
 
 ### Tools reference
 
@@ -111,7 +111,7 @@ The server resolves the repository from the client's working directory, so run y
 | `ready` | Mark a slot ready, records the branch HEAD, refuses dirty or stub-branch slots, never merge yourself |
 | `collect` | Integrator: merge a slot branch, or `ready` for all marked slots, refuses dirty or off-branch main checkouts |
 | `release` | Integrator: return a collected slot to the pool |
-| `init` | Write `.slots/` templates for a repository, commit the result |
+| `init` | Write `.pitbox/` templates for a repository, commit the result |
 
 ## Plugins for Claude Code and Codex
 
@@ -145,11 +145,13 @@ The update script requires a clean checkout at the published `origin/main` commi
 
 ## Repository configuration
 
-pitbox is global, repository specifics live in `.slots/` committed next to the code.
+pitbox is global, repository specifics live in `.pitbox/` committed next to the code.
 
-- `.slots/config`: shell variables, `MAIN_BRANCH=<branch>` overrides autodetection. Autodetect order: `MAIN_BRANCH` from config, then `origin/HEAD`, then the current branch. `REQUIRE_PUSH=1` makes `pitbox ready` demand a pushed branch, off by default.
-- `.slots/setup.sh`: called with the slot directory as `$1` after a worktree is added and on release. The `bun` template runs `bun install --frozen-lockfile`, the `php-docker` template runs `composer install`.
-- `.slots/release.sh`: optional extra cleanup on release, falls back to `setup.sh`.
+- `.pitbox/config`: shell variables, `MAIN_BRANCH=<branch>` overrides autodetection. Autodetect order: `MAIN_BRANCH` from config, then `origin/HEAD`, then the current branch. `REQUIRE_PUSH=1` makes `pitbox ready` demand a pushed branch, off by default.
+- `.pitbox/setup.sh`: called with the slot directory as `$1` after a worktree is added and on release. The `bun` template runs `bun install --frozen-lockfile`, the `php-docker` template runs `composer install`.
+- `.pitbox/release.sh`: optional extra cleanup on release, falls back to `setup.sh`.
+
+For a repository created with an older pitbox version, rename `.slots/` to `.pitbox/` before using the new CLI. The old directory is no longer read.
 
 `pitbox init` writes these templates and detects the stack from `composer.json` and `bun.lock` or `package.json`. Stack templates are the natural place for contributors to add new stacks.
 

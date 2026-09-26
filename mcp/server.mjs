@@ -4,11 +4,11 @@
 // so agents follow pitbox without any AGENTS.md edits.
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 
 const here = dirname(fileURLToPath(import.meta.url));
 function cliPath() {
@@ -18,9 +18,9 @@ function cliPath() {
     return "pitbox";
 }
 
-function runCli(args) {
+function runCli(args, repo) {
     return new Promise((resolve) => {
-        const child = spawn("bash", [cliPath(), ...args], { cwd: process.cwd() });
+        const child = spawn("bash", [cliPath(), ...args], { cwd: repo });
         let out = "";
         let err = "";
         child.stdout.on("data", (chunk) => { out += chunk; });
@@ -32,31 +32,14 @@ function runCli(args) {
 
 const MODE_RULE = "Workflow rule: one task = work in the main checkout, two or three parallel tasks = one slot each, the main checkout belongs to the integrator.";
 
-// The initialize result carries server instructions that the client shows to the
-// model. They are computed per session: an uninitialized repository gets the
-// onboarding steps, an initialized one gets the workflow summary.
-function repoRoot() {
-    let dir = process.cwd();
-    for (;;) {
-        if (existsSync(join(dir, ".git")) || existsSync(join(dir, ".slots", "config"))) return dir;
-        const parent = dirname(dir);
-        if (parent === dir) return null;
-        dir = parent;
-    }
-}
-
+// Plugin hosts can start this server inside their cache, so initialize cannot
+// infer the caller's repository from process.cwd().
 function serverInstructions() {
-    const root = repoRoot();
-    if (!root) {
-        return "pitbox manages a fixed pool of git worktree slots for parallel coding agents. " +
-            "Start inside a git repository, then run the init tool once to write .slots/ templates and the setup tool to create the slots.";
-    }
-    if (!existsSync(join(root, ".slots", "config"))) {
-        return "This repository has no pitbox slot pool yet. Run the init tool once to write .slots/ templates, review and commit .slots/, " +
-            "then run the setup tool to create the fixed worktree slots. Start parallel tasks with claim afterwards.";
-    }
-    return "pitbox owns the task lifecycle around the fixed worktree slot pool of this repository: claim, work, ready, collect, release. " +
-        "Slot agents claim a free slot, work in it, commit, push and call ready, never merging or deploying. " +
+    return "pitbox manages a fixed pool of git worktree slots. For every repository tool call, pass repo as the absolute path " +
+        "to the target repository or worktree. If the repository has no .pitbox/config, run init, review and commit .pitbox/, " +
+        "then run setup. The task lifecycle is claim, work, ready, collect, release. " +
+        "Slot agents claim a free slot, work in it, follow repository approval rules before committing or pushing, " +
+        "and call ready after the task branch is committed. They never merge or deploy. " +
         "The integrator calls collect, runs the full checks, pushes, then calls release. " +
         "Call guide for the full rules and status for the pool state.";
 }
@@ -82,7 +65,7 @@ const TOOLS = [
     {
         name: "setup",
         description:
-            "Create the fixed slot worktrees wt1..wtN next to the main checkout and run .slots/setup.sh in each new one. " +
+            "Create the fixed slot worktrees wt1..wtN next to the main checkout and run .pitbox/setup.sh in each new one. " +
             "Slots are a fixed pool: create them once and reuse them, never spawn ad-hoc worktrees. " +
             "Call when a new parallel task starts and no free slot exists. " + MODE_RULE,
         inputSchema: {
@@ -151,7 +134,7 @@ const TOOLS = [
         name: "release",
         description:
             "Integrator tool: reset the slot to the main branch, delete the merged task branch, clear TASK_READY.md, " +
-            "run .slots/release.sh (or setup.sh). Call only after collect succeeded and the main branch passed its checks, " +
+            "run .pitbox/release.sh (or setup.sh). Call only after collect succeeded and the main branch passed its checks, " +
             "and was deployed and pushed when the repository's rules require it.",
         inputSchema: {
             type: "object",
@@ -164,20 +147,31 @@ const TOOLS = [
     {
         name: "init",
         description:
-            "Write .slots/ templates (config, setup.sh, release.sh) for this repository so pitbox knows how to prepare and " +
+            "Write .pitbox/ templates (config, setup.sh, release.sh) for this repository so pitbox knows how to prepare and " +
             "clean slots. Auto-detects the stack (bun, php-docker) or take an explicit stack. Writes files into the repository " +
             "root, run once per repository, commit the result.",
         inputSchema: {
             type: "object",
             properties: {
                 stack: { type: "string", enum: ["bun", "php-docker"], description: "Stack template, auto-detected when omitted" },
-                force: { type: "boolean", description: "Overwrite an existing .slots/ directory", default: false },
+                force: { type: "boolean", description: "Overwrite an existing .pitbox/ directory", default: false },
             },
             additionalProperties: false,
         },
         args: (a) => ["init", ...(a.stack ? ["--stack", a.stack] : []), ...(a.force ? ["--force"] : [])],
     },
-];
+].map((tool) => tool.name === "guide" ? tool : {
+    ...tool,
+    description: "Pass repo as the absolute path to the target Git repository or worktree. " + tool.description,
+    inputSchema: {
+        ...tool.inputSchema,
+        properties: {
+            repo: { type: "string", description: "Absolute path to the target Git repository or worktree" },
+            ...tool.inputSchema.properties,
+        },
+        required: ["repo", ...(tool.inputSchema.required ?? [])],
+    },
+});
 
 function send(msg) {
     process.stdout.write(`${JSON.stringify(msg)}\n`);
@@ -197,8 +191,13 @@ async function callTool(id, name, args) {
         error(id, -32602, `unknown tool: ${name}`);
         return;
     }
+    const repo = name === "guide" ? process.cwd() : args?.repo;
+    if (name !== "guide" && (typeof repo !== "string" || !isAbsolute(repo) || !existsSync(repo))) {
+        result(id, { content: [{ type: "text", text: "repo must be an absolute path to an existing Git repository or worktree" }], isError: true });
+        return;
+    }
     try {
-        const { code, out, err } = await runCli(tool.args(args ?? {}));
+        const { code, out, err } = await runCli(tool.args(args ?? {}), repo);
         const text = `${out}${err ? (out ? "\n" : "") + err : ""}`.trim();
         result(id, { content: [{ type: "text", text: text || "(no output)" }], isError: code !== 0 });
     } catch (e) {

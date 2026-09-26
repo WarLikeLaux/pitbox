@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // MCP stdio round-trip: initialize, tools/list, tools/call (guide, status, init).
-// Usage: node scripts/mcp-smoke.mjs <cwd-inside-a-git-repo>
+// Usage: node scripts/mcp-smoke.mjs <git-repo-path>
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,9 +8,10 @@ import { strict as assert } from "node:assert";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const serverPath = join(here, "..", "mcp", "server.mjs");
-const cwd = process.argv[2] ?? process.cwd();
+const repo = process.argv[2] ?? process.cwd();
 
-const child = spawn("node", [serverPath], { cwd });
+// A plugin host may start the server outside the repository.
+const child = spawn("node", [serverPath], { cwd: dirname(repo) });
 let buffer = "";
 const pending = new Map();
 let nextId = 1;
@@ -56,6 +57,7 @@ const init = await request("initialize", {
 });
 assert.equal(init.result.serverInfo.name, "pitbox-mcp");
 assert.ok(typeof init.result.instructions === "string" && init.result.instructions.includes("pitbox"), "missing server instructions");
+assert.ok(init.result.instructions.includes("repo"));
 notification("notifications/initialized");
 
 const list = await request("tools/list", {});
@@ -64,22 +66,28 @@ for (const expected of ["guide", "status", "claim", "setup", "ready", "collect",
     assert.ok(names.includes(expected), `missing tool ${expected}`);
 }
 assert.ok(list.result.tools.every((t) => t.inputSchema && t.description.length > 40));
+for (const tool of list.result.tools.filter((tool) => tool.name !== "guide")) {
+    assert.ok(tool.inputSchema.required.includes("repo"), `${tool.name} must require repo`);
+}
 
 const guide = await request("tools/call", { name: "guide", arguments: {} });
 assert.equal(guide.result.isError, false);
 assert.ok(guide.result.content[0].text.includes("pitbox workflow guide"));
 
-const status = await request("tools/call", { name: "status", arguments: {} });
+const missingRepo = await request("tools/call", { name: "status", arguments: {} });
+assert.equal(missingRepo.result.isError, true);
+
+const status = await request("tools/call", { name: "status", arguments: { repo } });
 assert.equal(status.result.isError, false);
 assert.ok(status.result.content[0].text.includes("main branch"));
 
-const claim = await request("tools/call", { name: "claim", arguments: {} });
+const claim = await request("tools/call", { name: "claim", arguments: { repo } });
 assert.equal(claim.result.isError, false, `claim failed: ${claim.result.content[0].text}`);
 assert.ok(claim.result.content[0].text.includes("claimed"));
 
-const initCall = await request("tools/call", { name: "init", arguments: { stack: "bun", force: true } });
+const initCall = await request("tools/call", { name: "init", arguments: { repo, stack: "bun", force: true } });
 assert.equal(initCall.result.isError, false, `init failed: ${initCall.result.content[0].text}`);
-assert.ok(initCall.result.content[0].text.includes(".slots/"));
+assert.ok(initCall.result.content[0].text.includes(".pitbox/"));
 
 const bogus = await request("tools/call", { name: "nope", arguments: {} });
 assert.equal(bogus.error.code, -32602);

@@ -5,7 +5,7 @@ description: Collect finished pitbox slots into the repository's main branch as 
 
 # integrate
 
-You are the integrator. You collect finished work from pitbox slots into the main branch. Repository specifics (main branch name, deploy command, check commands) come from the repository's AGENTS.md and its `.slots/` directory, this skill only knows the orchestration. The `pitbox` MCP tools wrap the same commands, prefer them when available.
+You are the integrator. You collect finished work from pitbox slots into the main branch. Repository specifics (main branch name, deploy command, check commands) come from the repository's AGENTS.md and its `.pitbox/` directory, this skill only knows the orchestration. The `pitbox` MCP tools wrap the same commands, prefer them when available.
 
 ## Procedure
 

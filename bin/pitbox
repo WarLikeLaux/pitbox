@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # pitbox: fixed pool of git worktree slots for parallel agent tasks.
 #
-# Global tool, repo-specific behavior lives in .slots/ inside each repository:
-#   .slots/config       shell vars, e.g. MAIN_BRANCH=custom
-#   .slots/setup.sh     called with the slot dir as $1 after worktree add and on release
-#   .slots/release.sh   optional, called with the slot dir as $1 on release
+# Global tool, repo-specific behavior lives in .pitbox/ inside each repository:
+#   .pitbox/config       shell vars, e.g. MAIN_BRANCH=custom
+#   .pitbox/setup.sh     called with the slot dir as $1 after worktree add and on release
+#   .pitbox/release.sh   optional, called with the slot dir as $1 on release
 set -Eeuo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 
 usage() {
     cat <<EOF
 pitbox $VERSION: fixed pool of git worktree slots for parallel agent tasks
 
 Usage (run anywhere inside the repository):
-  pitbox init [--stack S] [--force]   Write .slots/ templates for this repo (stacks: bun, php-docker; auto-detected)
-  pitbox setup [N]              Create slot worktrees wt1..wtN (default 3), run .slots/setup.sh in each
+  pitbox init [--stack S] [--force]   Write .pitbox/ templates for this repo (stacks: bun, php-docker; auto-detected)
+  pitbox setup [N]              Create slot worktrees wt1..wtN (default 3), run .pitbox/setup.sh in each
   pitbox claim [slot] [name]    Atomically book a free slot and create the task branch in it (auto-picks a free slot)
   pitbox status                 Show slots: branch, dirty files, commits ahead of main, readiness
   pitbox ready <slot> [note]    Mark the slot's task ready (writes TASK_READY.md, refuses dirty or empty slots)
@@ -27,9 +27,9 @@ Usage (run anywhere inside the repository):
   pitbox help                   Show this help
 
 Repository configuration (committed alongside the code):
-  .slots/config                shell vars: MAIN_BRANCH=<branch>, REQUIRE_PUSH=1 demands pushed branches on ready
-  .slots/setup.sh              install deps in a fresh slot (bun install, composer install, ...)
-  .slots/release.sh            extra cleanup on release (defaults to setup.sh)
+  .pitbox/config                shell vars: MAIN_BRANCH=<branch>, REQUIRE_PUSH=1 demands pushed branches on ready
+  .pitbox/setup.sh              install deps in a fresh slot (bun install, composer install, ...)
+  .pitbox/release.sh            extra cleanup on release (defaults to setup.sh)
 
 Readiness marker: TASK_READY.md in the slot root. pitbox ignores it in its own dirty checks, a global git ignore is optional comfort.
 The user's word always overrides the marker.
@@ -46,9 +46,9 @@ main_worktree() {
 load_config() {
     local root="$1"
     MAIN_BRANCH=""
-    if [[ -f "$root/.slots/config" ]]; then
+    if [[ -f "$root/.pitbox/config" ]]; then
         # shellcheck disable=SC1091
-        source "$root/.slots/config"
+        source "$root/.pitbox/config"
     fi
     REQUIRE_PUSH="${REQUIRE_PUSH:-0}"
     if [[ -z "${MAIN_BRANCH}" ]]; then
@@ -57,7 +57,7 @@ load_config() {
     if [[ -z "${MAIN_BRANCH}" ]]; then
         MAIN_BRANCH="$(git -C "$root" branch --show-current)"
     fi
-    [[ -n "${MAIN_BRANCH}" ]] || die "cannot determine the main branch, set main_branch in .slots/config"
+    [[ -n "${MAIN_BRANCH}" ]] || die "cannot determine the main branch, set MAIN_BRANCH in .pitbox/config"
 }
 
 slot_dir() {
@@ -67,9 +67,9 @@ slot_dir() {
 
 run_hook() {
     local root="$1" hook="$2" dir="$3"
-    if [[ -f "$root/.slots/$hook" ]]; then
-        echo "pitbox: running .slots/$hook in $dir"
-        bash "$root/.slots/$hook" "$dir"
+    if [[ -f "$root/.pitbox/$hook" ]]; then
+        echo "pitbox: running .pitbox/$hook in $dir"
+        bash "$root/.pitbox/$hook" "$dir"
     fi
 }
 
@@ -273,7 +273,7 @@ cmd_release() {
         fi
     fi
     rm -f "$dir/TASK_READY.md"
-    if [[ -f "$root/.slots/release.sh" ]]; then
+    if [[ -f "$root/.pitbox/release.sh" ]]; then
         run_hook "$root" "release.sh" "$dir"
     else
         run_hook "$root" "setup.sh" "$dir"
@@ -303,7 +303,7 @@ Modes:
 Slot agents:
 - Start with: pitbox claim [slot] <branch-name>. It books a free slot atomically and creates your task branch in it.
 - Never pick a slot from status and create branches by hand, two agents can race for the same slot.
-- Verify inside the slot, commit, push the task branch. Push is checked only when REQUIRE_PUSH=1 in .slots/config.
+- Verify inside the slot. Follow the repository's approval rules before committing or pushing the task branch. Push is checked only when REQUIRE_PUSH=1 in .pitbox/config.
 - Then run: pitbox ready <slot> [notes]. ready refuses dirty slots, stub branches and unpushed commits (when REQUIRE_PUSH=1).
 - Never merge into the main branch, never deploy, never touch other slots.
 
@@ -316,7 +316,7 @@ Integrator (on the user's command):
 Rules:
 - The user's word always overrides the TASK_READY.md marker.
 - If collect is refused for any reason, report it, do not force.
-- Repository specifics: AGENTS.md in the repo root and the .slots/ hooks.
+- Repository specifics: AGENTS.md in the repo root and the .pitbox/ hooks.
 EOF
 }
 
@@ -331,7 +331,7 @@ detect_stack() {
 
 template_config() {
     cat <<'EOF'
-# slots configuration
+# pitbox configuration
 # Main branch for slots; leave commented to autodetect (origin/HEAD, else current branch).
 # MAIN_BRANCH=main
 EOF
@@ -339,15 +339,15 @@ EOF
 
 template_bun() {
     local root="$1"
-    template_config > "$root/.slots/config"
-    cat > "$root/.slots/setup.sh" <<'EOF'
+    template_config > "$root/.pitbox/config"
+    cat > "$root/.pitbox/setup.sh" <<'EOF'
 #!/usr/bin/env bash
 # Installs dependencies in a slot worktree (arg $1) using the shared bun cache.
 set -Eeuo pipefail
 cd -- "$1"
 bun install --frozen-lockfile
 EOF
-    cat > "$root/.slots/release.sh" <<'EOF'
+    cat > "$root/.pitbox/release.sh" <<'EOF'
 #!/usr/bin/env bash
 # Re-syncs a released slot (arg $1) with the merged main branch.
 # Add build-artifact cleanup for this project below if needed.
@@ -359,8 +359,8 @@ EOF
 
 template_php_docker() {
     local root="$1"
-    template_config > "$root/.slots/config"
-    cat > "$root/.slots/setup.sh" <<'EOF'
+    template_config > "$root/.pitbox/config"
+    cat > "$root/.pitbox/setup.sh" <<'EOF'
 #!/usr/bin/env bash
 # Prepares a slot worktree (arg $1) for a PHP + docker-compose project.
 # Per-slot compose isolation needs: COMPOSE_PROJECT_NAME=<slot>, unique host
@@ -370,7 +370,7 @@ cd -- "$1"
 command -v composer >/dev/null 2>&1 && composer install --no-interaction --no-progress
 echo "pitbox: remember to set COMPOSE_PROJECT_NAME and unique ports before running compose in this slot"
 EOF
-    cat > "$root/.slots/release.sh" <<'EOF'
+    cat > "$root/.pitbox/release.sh" <<'EOF'
 #!/usr/bin/env bash
 # Resets a released slot (arg $1) for a PHP + docker-compose project.
 set -Eeuo pipefail
@@ -390,21 +390,21 @@ cmd_init() {
             *) die "init: unknown argument: $1" ;;
         esac
     done
-    if [[ -d "$root/.slots" && "$force" != 1 ]]; then
-        die ".slots already exists, use --force to overwrite"
+    if [[ -d "$root/.pitbox" && "$force" != 1 ]]; then
+        die ".pitbox already exists, use --force to overwrite"
     fi
     if [[ -z "$stack" ]]; then
         stack="$(detect_stack "$root")"
         [[ -n "$stack" ]] || die "cannot detect the stack, pass --stack bun or --stack php-docker"
     fi
-    mkdir -p "$root/.slots"
+    mkdir -p "$root/.pitbox"
     case "$stack" in
         bun) template_bun "$root" ;;
         php-docker) template_php_docker "$root" ;;
         *) die "unknown stack: $stack (supported: bun, php-docker)" ;;
     esac
-    chmod +x "$root/.slots/setup.sh" "$root/.slots/release.sh"
-    echo "pitbox: wrote $stack templates to $root/.slots/ (commit them so slots can see the config)"
+    chmod +x "$root/.pitbox/setup.sh" "$root/.pitbox/release.sh"
+    echo "pitbox: wrote $stack templates to $root/.pitbox/ (commit them so slots can see the config)"
 }
 
 case "${1:-help}" in
