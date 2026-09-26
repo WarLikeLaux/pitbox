@@ -8,7 +8,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 
-const VERSION = "0.3.0";
+const VERSION = "0.3.1";
 
 const here = dirname(fileURLToPath(import.meta.url));
 function cliPath() {
@@ -38,9 +38,10 @@ function serverInstructions() {
     return "pitbox manages a fixed pool of git worktree slots. For every repository tool call, pass repo as the absolute path " +
         "to the target repository or worktree. If the repository has no .pitbox/config, run init, review and commit .pitbox/, " +
         "then run setup. The task lifecycle is claim, work, ready, collect, release. " +
-        "Slot agents claim a free slot, work in it, follow repository approval rules before committing or pushing, " +
-        "and call ready after the task branch is committed. They never merge or deploy. " +
-        "The integrator calls collect, runs the full checks, pushes, then calls release. " +
+        "Slot agents claim a free slot, verify work, preview visual changes with screenshots without deploying, " +
+        "honor user acceptance requirements, commit, and call ready. A request to collect a shown visual result counts as acceptance. " +
+        "In slot mode, defer repository deploy-before-commit requirements until integration: slot agents never deploy. " +
+        "The integrator calls collect, runs the full checks, deploys once, pushes, then calls release. " +
         "Call guide for the full rules and status for the pool state.";
 }
 
@@ -101,7 +102,9 @@ const TOOLS = [
         description:
             "Mark the slot's task ready for integration: writes TASK_READY.md recording the branch and its exact HEAD, refuses if the " +
             "slot is dirty, still on its slot/wtN stub branch, or (when REQUIRE_PUSH=1) has unpushed commits. Call it only after you " +
-            "verified the work and committed the task branch. Never merge into the main branch, never deploy, never touch other " +
+            "verified the work and committed the task branch. For visual work, a local preview or Playwright screenshot can " +
+            "satisfy the review step before user acceptance; defer any repository deploy-before-commit rule to integration. " +
+            "Never merge into the main branch, never deploy, never touch other " +
             "slots, the integrator does that.",
         inputSchema: {
             type: "object",
@@ -120,7 +123,7 @@ const TOOLS = [
             "Integrator tool: merge the slot's task branch into the main branch with a --no-ff merge commit. " +
             "Pass the literal string 'ready' as slot to collect every slot with TASK_READY.md. " +
             "collect refuses to run when the main worktree is off the main branch or dirty, and when a slot changed after its " +
-            "marker was written. After collecting, run the repository's full checks, deploy when the repository rules require it, " +
+            "marker was written. After collecting, run the repository's full checks, perform the deferred deployment once, " +
             "push, then release each collected slot. Report refusals, do not force.",
         inputSchema: {
             type: "object",

@@ -7,7 +7,7 @@
       "name": "pitbox",
       "source": "./plugin",
       "description": "pitbox slot workflow for Claude Code: MCP tools plus the integrate skill",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "author": { "name": "WarLikeLaux" },
       "license": "MIT",
       "keywords": ["mcp", "git", "worktree", "parallel", "agents"],

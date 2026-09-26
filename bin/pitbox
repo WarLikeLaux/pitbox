@@ -312,18 +312,19 @@ Modes:
 Slot agents:
 - Start with: pitbox claim [slot] <branch-name>. It books a free slot atomically and creates your task branch in it.
 - Never pick a slot from status and create branches by hand, two agents can race for the same slot.
-- Verify inside the slot. Follow the repository's approval rules before committing or pushing the task branch. Push is checked only when REQUIRE_PUSH=1 in .pitbox/config.
+- Verify inside the slot. For visual work, show a local preview or Playwright screenshot for review without deploying. Honor any required user acceptance before committing. A request to collect the shown result counts as acceptance. Follow repository rules for commits and pushes otherwise. Push is checked only when REQUIRE_PUSH=1 in .pitbox/config.
 - Then run: pitbox ready <slot> [notes]. ready refuses dirty slots, stub branches and unpushed commits (when REQUIRE_PUSH=1).
 - Never merge into the main branch, never deploy, never touch other slots.
 
 Integrator (on the user's command):
 - pitbox status, then collect ready slots: pitbox collect <slot|ready>
 - collect refuses when the main worktree is off the main branch, when it is dirty, or when a slot changed after its marker.
-- Run the repository's full checks, then deploy following the repository's AGENTS.md.
+- Run the repository's full checks, then deploy once following the repository's AGENTS.md.
 - Push the main branch, then pitbox release <slot> for each collected slot.
 
 Rules:
 - The user's word always overrides the TASK_READY.md marker.
+- In slot mode, defer repository deploy-before-commit requirements to the integrator after collection. They must not block a verified slot from being committed and marked ready. Direct work in the main checkout follows the repository's normal delivery order.
 - If collect is refused for any reason, report it, do not force.
 - Repository specifics: AGENTS.md in the repo root and the .pitbox/ hooks.
 EOF
