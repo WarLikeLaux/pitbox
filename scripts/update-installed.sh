@@ -150,7 +150,7 @@ update_mavis() {
     mkdir -p "$target"
     cp -r plugin/. "$target/"
     # Ask Mavis to refresh its local plugin snapshot.
-    command -v mcode >/dev/null && mcode plugin marketplace upgrade >/dev/null 2>&1 || true
+    if command -v mcode >/dev/null 2>&1; then mcode plugin marketplace upgrade >/dev/null 2>&1 || true; fi
     echo "Updated the Mavis plugin at $target from version $installed to $version"
 }
 
