@@ -1,6 +1,6 @@
 {
   "name": "pitbox",
-  "description": "Fixed pool of git worktree slots for parallel coding agents, packaged with the integrate skill and the pitbox MCP server for Claude Code",
+  "description": "Handoff and integration protocol for parallel coding agents, packaged with the integrate skill and the pitbox MCP server for Claude Code",
   "owner": { "name": "WarLikeLaux", "url": "https://github.com/WarLikeLaux" },
   "plugins": [
     {

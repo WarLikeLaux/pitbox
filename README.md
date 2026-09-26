@@ -5,13 +5,13 @@
 
 English | [Русский](README-ru.md)
 
-A fixed pool of git worktree slots for running coding agents in parallel. A bash CLI plus an MCP facade whose tool descriptions carry the workflow rules, so agents follow the process without any AGENTS.md edits.
+A coordination layer for parallel coding agents: reusable worktree workers, an explicit handoff marker, and a deterministic integration procedure. A bash CLI plus an MCP facade whose tool descriptions carry the workflow rules, so agents follow the process without any AGENTS.md edits.
 
 ## Why
 
 AI coding agents step on each other when they share one checkout. Creating a worktree per task looks easy but leaves two problems: abandoned worktrees pile up as disk garbage, and an agent has no standard way to say "my task is finished, come collect it".
 
-pitbox answers with three decisions.
+pitbox answers with three decisions. The worktrees are only the runtime. What pitbox owns is the task lifecycle around them: claim, work, ready, collect, release.
 
 - A fixed pool of two or three slots created once next to the checkout and reused forever. No spawn per task, no leftovers, dependency installs are paid once per slot.
 - A readiness marker. A slot agent finishes by writing `TASK_READY.md`, the integrator collects only marked slots, and the user's word always overrides the marker.
