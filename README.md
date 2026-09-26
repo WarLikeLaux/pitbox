@@ -27,7 +27,7 @@ integrator only       agent + task branch  agent + task branch  spare
 
 - One task: work directly in the main checkout, no slots involved.
 - Two or three parallel tasks: one slot each, the main checkout belongs to the integrator.
-- A slot agent creates its own task branch, verifies inside the slot, commits, pushes, then marks the slot ready.
+- A slot agent books a slot with `pitbox claim` (it atomically reserves a free slot and creates the task branch), verifies inside the slot, commits, pushes, then marks the slot ready.
 - The integrator collects ready slots, runs the repository's full checks, deploys, pushes, and releases the slots back to the pool.
 
 ## Quick start
@@ -47,7 +47,7 @@ pitbox init      # writes .slots/ templates, auto-detects bun or php + docker
 pitbox setup     # creates ../your-repo-wt1 .. wt3 and installs dependencies in each
 ```
 
-Teach git to ignore the readiness marker globally:
+Optionally teach git to ignore the readiness marker globally, so agents do not see it in `git status` (pitbox already excludes it from its own checks):
 
 ```bash
 git config --global core.excludesFile ~/.config/git/ignore
@@ -60,9 +60,10 @@ Everyday commands:
 |---------|--------------|
 | `pitbox init [--stack S] [--force]` | Write `.slots/` templates for this repository (stacks: `bun`, `php-docker`, auto-detected) |
 | `pitbox setup [N]` | Create the slot pool, default three slots |
+| `pitbox claim [slot] [name]` | Atomically book a free slot and create the task branch in it (auto-picks when the slot is omitted) |
 | `pitbox status` | Branch, dirty files, commits ahead of main, readiness per slot |
-| `pitbox ready <slot> [note]` | Mark the slot's task ready, refuses dirty or stub-branch slots |
-| `pitbox collect <slot\|ready>` | Merge the slot's task branch into the main branch with `--no-ff` |
+| `pitbox ready <slot> [note]` | Mark the slot's task ready, records the branch HEAD, refuses dirty or stub-branch slots |
+| `pitbox collect <slot\|ready>` | Merge the slot's task branch into the main branch with `--no-ff`, refuses a dirty or off-branch main checkout and slots changed after the marker |
 | `pitbox release <slot>` | Reset the slot to main, delete the merged branch, run release hooks |
 | `pitbox guide` | Print the full workflow rules for agents |
 
@@ -104,10 +105,11 @@ The server resolves the repository from the client's working directory, so run y
 | Tool | Purpose |
 |------|---------|
 | `guide` | Full workflow rules, call once before using the others |
-| `status` | Slot pool state, call first when picking a slot or before integrating |
+| `status` | Slot pool state, call it before integrating; to start a task use `claim`, never book a slot by hand |
+| `claim` | Book a free slot atomically and create your task branch in it |
 | `setup` | Create the fixed slot pool, never spawn ad-hoc worktrees |
-| `ready` | Mark a slot ready, only after commit and push, never merge yourself |
-| `collect` | Integrator: merge a slot branch, or `ready` for all marked slots |
+| `ready` | Mark a slot ready, records the branch HEAD, refuses dirty or stub-branch slots, never merge yourself |
+| `collect` | Integrator: merge a slot branch, or `ready` for all marked slots, refuses dirty or off-branch main checkouts |
 | `release` | Integrator: return a collected slot to the pool |
 | `init` | Write `.slots/` templates for a repository, commit the result |
 
@@ -128,7 +130,7 @@ Codex: the repository ships `.agents/plugins/marketplace.json` and a plugin dire
 
 pitbox is global, repository specifics live in `.slots/` committed next to the code.
 
-- `.slots/config`: shell variables, `MAIN_BRANCH=<branch>` overrides autodetection. Autodetect order: `MAIN_BRANCH` from config, then `origin/HEAD`, then the current branch.
+- `.slots/config`: shell variables, `MAIN_BRANCH=<branch>` overrides autodetection. Autodetect order: `MAIN_BRANCH` from config, then `origin/HEAD`, then the current branch. `REQUIRE_PUSH=1` makes `pitbox ready` demand a pushed branch, off by default.
 - `.slots/setup.sh`: called with the slot directory as `$1` after a worktree is added and on release. The `bun` template runs `bun install --frozen-lockfile`, the `php-docker` template runs `composer install`.
 - `.slots/release.sh`: optional extra cleanup on release, falls back to `setup.sh`.
 

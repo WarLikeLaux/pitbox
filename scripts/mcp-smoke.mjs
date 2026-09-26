@@ -59,7 +59,7 @@ notification("notifications/initialized");
 
 const list = await request("tools/list", {});
 const names = list.result.tools.map((t) => t.name);
-for (const expected of ["guide", "status", "setup", "ready", "collect", "release", "init"]) {
+for (const expected of ["guide", "status", "claim", "setup", "ready", "collect", "release", "init"]) {
     assert.ok(names.includes(expected), `missing tool ${expected}`);
 }
 assert.ok(list.result.tools.every((t) => t.inputSchema && t.description.length > 40));
@@ -71,6 +71,10 @@ assert.ok(guide.result.content[0].text.includes("pitbox workflow guide"));
 const status = await request("tools/call", { name: "status", arguments: {} });
 assert.equal(status.result.isError, false);
 assert.ok(status.result.content[0].text.includes("main branch"));
+
+const claim = await request("tools/call", { name: "claim", arguments: {} });
+assert.equal(claim.result.isError, false, `claim failed: ${claim.result.content[0].text}`);
+assert.ok(claim.result.content[0].text.includes("claimed"));
 
 const initCall = await request("tools/call", { name: "init", arguments: { stack: "bun", force: true } });
 assert.equal(initCall.result.isError, false, `init failed: ${initCall.result.content[0].text}`);

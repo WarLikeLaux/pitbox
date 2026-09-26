@@ -13,7 +13,7 @@ You are the integrator. You collect finished work from pitbox slots into the mai
 2. Pick the slots to collect: only ones with TASK_READY.md, or the ones the user named. The user's word overrides the marker.
 3. Confirm the list with the user: "collecting wt1 (feat/x) and wt2 (fix/y), then deploying". Do not merge without confirmation.
 4. Before deploying make sure no session or agent is mid-turn: deploys restart services. Ask if unsure.
-5. `pitbox collect <slot>` for each confirmed slot. Then run the repository's full checks (this repository's AGENTS.md lists them).
+5. `pitbox collect <slot>` for each confirmed slot. collect refuses to merge when the main worktree is off the main branch or dirty, and when a slot changed after its marker was written. Then run the repository's full checks (this repository's AGENTS.md lists them).
 6. Deploy with the command from the repository's AGENTS.md. After deploying, verify the services are alive.
 7. Push the main branch. Then `pitbox release <slot>` for each collected slot.
 8. Report: what landed, what is still in slots, what was not collected and why.

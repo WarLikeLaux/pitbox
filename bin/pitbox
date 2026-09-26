@@ -7,7 +7,7 @@
 #   .slots/release.sh   optional, called with the slot dir as $1 on release
 set -Eeuo pipefail
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 
 usage() {
     cat <<EOF
@@ -16,6 +16,7 @@ pitbox $VERSION: fixed pool of git worktree slots for parallel agent tasks
 Usage (run anywhere inside the repository):
   pitbox init [--stack S] [--force]   Write .slots/ templates for this repo (stacks: bun, php-docker; auto-detected)
   pitbox setup [N]              Create slot worktrees wt1..wtN (default 3), run .slots/setup.sh in each
+  pitbox claim [slot] [name]    Atomically book a free slot and create the task branch in it (auto-picks a free slot)
   pitbox status                 Show slots: branch, dirty files, commits ahead of main, readiness
   pitbox ready <slot> [note]    Mark the slot's task ready (writes TASK_READY.md, refuses dirty or empty slots)
   pitbox collect <slot|ready>   Merge the slot branch into the main branch (--no-ff)
@@ -26,11 +27,11 @@ Usage (run anywhere inside the repository):
   pitbox help                   Show this help
 
 Repository configuration (committed alongside the code):
-  .slots/config                shell vars: MAIN_BRANCH=<branch>
+  .slots/config                shell vars: MAIN_BRANCH=<branch>, REQUIRE_PUSH=1 demands pushed branches on ready
   .slots/setup.sh              install deps in a fresh slot (bun install, composer install, ...)
   .slots/release.sh            extra cleanup on release (defaults to setup.sh)
 
-Readiness marker: TASK_READY.md in the slot root (add it to a global git ignore once).
+Readiness marker: TASK_READY.md in the slot root. pitbox ignores it in its own dirty checks, a global git ignore is optional comfort.
 The user's word always overrides the marker.
 EOF
 }
@@ -49,6 +50,7 @@ load_config() {
         # shellcheck disable=SC1091
         source "$root/.slots/config"
     fi
+    REQUIRE_PUSH="${REQUIRE_PUSH:-0}"
     if [[ -z "${MAIN_BRANCH}" ]]; then
         MAIN_BRANCH="$(git -C "$root" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')" || MAIN_BRANCH=""
     fi
@@ -71,6 +73,14 @@ run_hook() {
     fi
 }
 
+dirty_count() {
+    git -C "$1" status --porcelain -- . ':(exclude)TASK_READY.md' | wc -l | tr -d ' '
+}
+
+common_git_dir() {
+    git -C "$1" rev-parse --path-format=absolute --git-common-dir
+}
+
 slot_names() {
     local root="$1"
     local base
@@ -78,6 +88,46 @@ slot_names() {
     for d in "$(dirname "$root")"/"$base"-wt*; do
         [[ -d "$d" ]] && basename "$d" | sed 's/.*-//'
     done
+}
+
+claim_one() {
+    local root="$1" name="$2" branch="$3" dir cur
+    dir="$(slot_dir "$root" "$name")"
+    [[ -d "$dir" ]] || die "no such slot: $name"
+    cur="$(git -C "$dir" branch --show-current)"
+    [[ "$cur" == "slot/$name" ]] || die "slot $name is busy on $cur, pick another slot"
+    git -C "$dir" checkout -q -b "$branch" 2>/dev/null || die "cannot create branch $branch in $name, it already exists?"
+    echo "pitbox: claimed $name for $branch"
+}
+
+cmd_claim() {
+    local root want="" name="" free s
+    root="$(main_worktree)"
+    load_config "$root"
+    case $# in
+        0) ;;
+        1) want="$1" ;;
+        2) want="$1"; name="$2" ;;
+        *) die "usage: pitbox claim [slot] [branch-name]" ;;
+    esac
+    [[ -n "$name" ]] || name="task/$(date -u +%Y%m%d-%H%M%S)"
+    # Deliberately global so the single-quoted EXIT trap below still sees it.
+    lock="$(common_git_dir "$root")/pitbox-claim.lock"
+    mkdir "$lock" 2>/dev/null || die "another claim is in progress, remove $lock if it is stale"
+    trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+    if [[ -n "$want" ]]; then
+        claim_one "$root" "$want" "$name"
+    else
+        free=""
+        for s in $(slot_names "$root"); do
+            if [[ "$(git -C "$(slot_dir "$root" "$s")" branch --show-current)" == "slot/$s" ]]; then
+                free="$s"
+                break
+            fi
+        done
+        [[ -n "$free" ]] || die "no free slot, run: pitbox setup"
+        claim_one "$root" "$free" "$name"
+    fi
 }
 
 cmd_setup() {
@@ -113,7 +163,7 @@ cmd_status() {
         any=1
         dir="$(slot_dir "$root" "$name")"
         branch="$(git -C "$dir" branch --show-current)"
-        dirty="$(git -C "$dir" status --porcelain | wc -l | tr -d ' ')"
+        dirty="$(dirty_count "$dir")"
         ahead="$(git -C "$dir" rev-list --count "$MAIN_BRANCH..HEAD" 2>/dev/null || echo '?')"
         if [[ -f "$dir/TASK_READY.md" ]]; then
             ready="yes"
@@ -122,28 +172,35 @@ cmd_status() {
         fi
         printf '%-6s %-28s %-7s %-7s %-7s %s\n' "$name" "$branch" "$dirty" "$ahead" "$ready" "$dir"
     done
-    [[ "$any" == 1 ]] || echo "no slots yet, run: slots setup"
+    [[ "$any" == 1 ]] || echo "no slots yet, run: pitbox setup"
 }
 
 cmd_ready() {
-    local root name dir branch dirty ahead note
+    local root name dir branch dirty ahead note unpushed
     root="$(main_worktree)"
     load_config "$root"
     name="${1:-}"
     shift || true
     note="$*"
-    [[ -n "$name" ]] || die "usage: slots ready <slot> [note]"
+    [[ -n "$name" ]] || die "usage: pitbox ready <slot> [note]"
     dir="$(slot_dir "$root" "$name")"
     [[ -d "$dir" ]] || die "no such slot: $name"
     branch="$(git -C "$dir" branch --show-current)"
     [[ "$branch" != "slot/$name" ]] || die "slot $name has no task branch, create one before marking ready"
-    dirty="$(git -C "$dir" status --porcelain | wc -l | tr -d ' ')"
+    dirty="$(dirty_count "$dir")"
     [[ "$dirty" == 0 ]] || die "slot $name has $dirty uncommitted files, commit first"
+    if [[ "$REQUIRE_PUSH" == "1" ]]; then
+        git -C "$dir" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1 \
+            || die "slot $name branch $branch has no upstream, push it first"
+        unpushed="$(git -C "$dir" rev-list --count '@{u}..HEAD')"
+        [[ "$unpushed" == 0 ]] || die "slot $name has $unpushed unpushed commits, push before marking ready"
+    fi
     ahead="$(git -C "$dir" rev-list --count "$MAIN_BRANCH..HEAD")"
     [[ "$ahead" != 0 ]] || die "slot $name has no commits ahead of $MAIN_BRANCH"
     cat > "$dir/TASK_READY.md" <<EOF
 branch: $branch
 slot: $name
+commit: $(git -C "$dir" rev-parse HEAD)
 updated: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 notes: ${note:-none}
 EOF
@@ -155,16 +212,31 @@ cmd_collect() {
     root="$(main_worktree)"
     load_config "$root"
     target="${1:-}"
-    [[ -n "$target" ]] || die "usage: slots collect <slot|ready>"
+    [[ -n "$target" ]] || die "usage: pitbox collect <slot|ready>"
     main="$(main_worktree)"
     collect_one() {
-        name="$1"
+        local name="$1" marked="$2" dir branch mb dmain mbranch mcommit cur
         dir="$(slot_dir "$root" "$name")"
         [[ -d "$dir" ]] || die "no such slot: $name"
         branch="$(git -C "$dir" branch --show-current)"
         if [[ "$branch" == "slot/$name" ]]; then
             echo "pitbox: skipping $name (no task branch)"
             return 0
+        fi
+        mb="$(git -C "$main" branch --show-current)"
+        [[ "$mb" == "$MAIN_BRANCH" ]] || die "main worktree is on $mb, collect merges into $MAIN_BRANCH, switch it first"
+        dmain="$(dirty_count "$main")"
+        [[ "$dmain" == 0 ]] || die "main checkout has $dmain uncommitted files, clean it before collecting"
+        if [[ -f "$dir/TASK_READY.md" ]]; then
+            mbranch="$(sed -n 's/^branch: //p' "$dir/TASK_READY.md")"
+            mcommit="$(sed -n 's/^commit: //p' "$dir/TASK_READY.md")"
+            cur="$(git -C "$dir" rev-parse HEAD)"
+            [[ "$mbranch" == "$branch" ]] || die "slot $name switched from $mbranch to $branch after being marked ready"
+            if [[ -n "$mcommit" && "$mcommit" != "$cur" ]]; then
+                die "slot $name changed after being marked ready ($mcommit, now $cur), re-run pitbox ready $name"
+            fi
+        elif [[ -z "$marked" ]]; then
+            echo "pitbox: warning: $name has no TASK_READY.md, collecting anyway (the user's word overrides the marker)"
         fi
         echo "pitbox: merging $branch from $name into $MAIN_BRANCH"
         git -C "$main" merge --no-ff "$branch" -m "Merge $branch from $name"
@@ -174,12 +246,12 @@ cmd_collect() {
         for name in $(slot_names "$root"); do
             if [[ -f "$(slot_dir "$root" "$name")/TASK_READY.md" ]]; then
                 any=1
-                collect_one "$name"
+                collect_one "$name" 1
             fi
         done
         [[ "$any" == 1 ]] || echo "pitbox: no ready slots found"
     else
-        collect_one "$target"
+        collect_one "$target" 0
     fi
 }
 
@@ -188,7 +260,7 @@ cmd_release() {
     root="$(main_worktree)"
     load_config "$root"
     name="${1:-}"
-    [[ -n "$name" ]] || die "usage: slots release <slot>"
+    [[ -n "$name" ]] || die "usage: pitbox release <slot>"
     dir="$(slot_dir "$root" "$name")"
     [[ -d "$dir" ]] || die "no such slot: $name"
     branch="$(git -C "$dir" branch --show-current)"
@@ -201,7 +273,11 @@ cmd_release() {
         fi
     fi
     rm -f "$dir/TASK_READY.md"
-    run_hook "$root" "release.sh" "$dir" || run_hook "$root" "setup.sh" "$dir"
+    if [[ -f "$root/.slots/release.sh" ]]; then
+        run_hook "$root" "release.sh" "$dir"
+    else
+        run_hook "$root" "setup.sh" "$dir"
+    fi
     echo "pitbox: $name released, now on slot/$name at $MAIN_BRANCH"
 }
 
@@ -222,22 +298,24 @@ pitbox workflow guide
 
 Modes:
 - One task: work directly in the main checkout.
-- Two or three parallel tasks: one per slot (wt1..wtN); the main checkout is reserved for the integrator.
+- Two or three parallel tasks: one per slot (wt1..wtN), the main checkout is reserved for the integrator.
 
 Slot agents:
-- Create your own task branch in the slot; never work on the slot/wtN stub branch itself.
-- Verify inside the slot, commit, push the task branch.
-- Then run: pitbox ready <slot> [notes]
+- Start with: pitbox claim [slot] <branch-name>. It books a free slot atomically and creates your task branch in it.
+- Never pick a slot from status and create branches by hand, two agents can race for the same slot.
+- Verify inside the slot, commit, push the task branch. Push is checked only when REQUIRE_PUSH=1 in .slots/config.
+- Then run: pitbox ready <slot> [notes]. ready refuses dirty slots, stub branches and unpushed commits (when REQUIRE_PUSH=1).
 - Never merge into the main branch, never deploy, never touch other slots.
 
 Integrator (on the user's command):
 - pitbox status, then collect ready slots: pitbox collect <slot|ready>
+- collect refuses when the main worktree is off the main branch, when it is dirty, or when a slot changed after its marker.
 - Run the repository's full checks, then deploy following the repository's AGENTS.md.
 - Push the main branch, then pitbox release <slot> for each collected slot.
 
 Rules:
 - The user's word always overrides the TASK_READY.md marker.
-- If a merge is refused because the main checkout is dirty, report it; do not force.
+- If collect is refused for any reason, report it, do not force.
 - Repository specifics: AGENTS.md in the repo root and the .slots/ hooks.
 EOF
 }
@@ -333,6 +411,7 @@ case "${1:-help}" in
     init) shift; cmd_init "$@" ;;
     guide) cmd_guide ;;
     setup) shift; cmd_setup "$@" ;;
+    claim) shift; cmd_claim "$@" ;;
     status) cmd_status ;;
     ready) shift; cmd_ready "$@" ;;
     collect) shift; cmd_collect "$@" ;;

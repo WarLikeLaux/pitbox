@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 const here = dirname(fileURLToPath(import.meta.url));
 function cliPath() {
@@ -45,8 +45,8 @@ const TOOLS = [
         name: "status",
         description:
             "Show the pitbox slot pool for the current repository: branch, dirty files, commits ahead of main, " +
-            "TASK_READY.md readiness and path per slot. Call this first when picking a slot for a new parallel task, " +
-            "when checking whether work is ready, and before integrating. " + MODE_RULE,
+            "TASK_READY.md readiness and path per slot. Call this to see the pool state, when checking whether work is ready, " +
+            "and before integrating. To start a new parallel task use claim, never book a slot by hand. " + MODE_RULE,
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
         args: () => ["status"],
     },
@@ -64,11 +64,33 @@ const TOOLS = [
         args: (a) => (a.count !== undefined ? ["setup", String(a.count)] : ["setup"]),
     },
     {
+        name: "claim",
+        description:
+            "Take a free slot for a new parallel task: pitbox books a slot atomically and creates your task branch in it. " +
+            "Pass a branch name for the task branch, omit slot to auto-pick the first free one. " +
+            "Never pick a slot from status and create branches by hand, two agents can race for the same slot. " +
+            "One task per slot, never touch other slots. " + MODE_RULE,
+        inputSchema: {
+            type: "object",
+            properties: {
+                slot: { type: "string", description: "Slot name, e.g. wt1; the first free slot is auto-picked when omitted" },
+                name: { type: "string", description: "Task branch name, e.g. task/feat-auth; a timestamped task/* name is generated when omitted" },
+            },
+            additionalProperties: false,
+        },
+        args: (a) => {
+            if (a.slot) return ["claim", a.slot, ...(a.name ? [a.name] : [])];
+            if (a.name) return ["claim", a.name];
+            return ["claim"];
+        },
+    },
+    {
         name: "ready",
         description:
-            "Mark the slot's task ready for integration: writes TASK_READY.md in the slot root, refuses if the slot is dirty " +
-            "or still on its slot/wtN stub branch. Call it only after you verified the work, committed and pushed the task branch. " +
-            "Never merge into the main branch, never deploy, never touch other slots, the integrator does that.",
+            "Mark the slot's task ready for integration: writes TASK_READY.md recording the branch and its exact HEAD, refuses if the " +
+            "slot is dirty, still on its slot/wtN stub branch, or (when REQUIRE_PUSH=1) has unpushed commits. Call it only after you " +
+            "verified the work and committed the task branch. Never merge into the main branch, never deploy, never touch other " +
+            "slots, the integrator does that.",
         inputSchema: {
             type: "object",
             properties: {
@@ -85,8 +107,9 @@ const TOOLS = [
         description:
             "Integrator tool: merge the slot's task branch into the main branch with a --no-ff merge commit. " +
             "Pass the literal string 'ready' as slot to collect every slot with TASK_READY.md. " +
-            "After collecting, run the repository's full checks, deploy when the repository rules require it, push, " +
-            "then release each collected slot. If the merge fails because the main checkout is dirty, report it, do not force.",
+            "collect refuses to run when the main worktree is off the main branch or dirty, and when a slot changed after its " +
+            "marker was written. After collecting, run the repository's full checks, deploy when the repository rules require it, " +
+            "push, then release each collected slot. Report refusals, do not force.",
         inputSchema: {
             type: "object",
             properties: { slot: { type: "string", description: "Slot name, e.g. wt1, or the literal string 'ready'" } },
