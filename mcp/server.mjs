@@ -8,7 +8,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 
-const VERSION = "0.3.1";
+const VERSION = "0.3.2";
 
 const here = dirname(fileURLToPath(import.meta.url));
 function cliPath() {
@@ -38,7 +38,8 @@ function serverInstructions() {
     return "pitbox manages a fixed pool of git worktree slots. For every repository tool call, pass repo as the absolute path " +
         "to the target repository or worktree. If the repository has no .pitbox/config, run init, review and commit .pitbox/, " +
         "then run setup. The task lifecycle is claim, work, ready, collect, release. " +
-        "Slot agents claim a free slot, verify work, preview visual changes with screenshots without deploying, " +
+        "Slot agents claim a free slot, verify work, capture and display visual screenshots in the conversation without deploying. " +
+        "A localhost link alone is not a reviewable preview for a remote user. " +
         "honor user acceptance requirements, commit, and call ready. A request to collect a shown visual result counts as acceptance. " +
         "In slot mode, defer repository deploy-before-commit requirements until integration: slot agents never deploy. " +
         "The integrator calls collect, runs the full checks, deploys once, pushes, then calls release. " +
@@ -102,8 +103,9 @@ const TOOLS = [
         description:
             "Mark the slot's task ready for integration: writes TASK_READY.md recording the branch and its exact HEAD, refuses if the " +
             "slot is dirty, still on its slot/wtN stub branch, or (when REQUIRE_PUSH=1) has unpushed commits. Call it only after you " +
-            "verified the work and committed the task branch. For visual work, a local preview or Playwright screenshot can " +
-            "satisfy the review step before user acceptance; defer any repository deploy-before-commit rule to integration. " +
+            "verified the work and committed the task branch. For visual work, capture a screenshot from a local preview " +
+            "and display it in the conversation before requesting acceptance. A localhost link alone is insufficient. " +
+            "Defer any repository deploy-before-commit rule to integration. " +
             "Never merge into the main branch, never deploy, never touch other " +
             "slots, the integrator does that.",
         inputSchema: {

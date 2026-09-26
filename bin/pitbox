@@ -312,7 +312,7 @@ Modes:
 Slot agents:
 - Start with: pitbox claim [slot] <branch-name>. It books a free slot atomically and creates your task branch in it.
 - Never pick a slot from status and create branches by hand, two agents can race for the same slot.
-- Verify inside the slot. For visual work, show a local preview or Playwright screenshot for review without deploying. Honor any required user acceptance before committing. A request to collect the shown result counts as acceptance. Follow repository rules for commits and pushes otherwise. Push is checked only when REQUIRE_PUSH=1 in .pitbox/config.
+- Verify inside the slot. For visual work, capture a screenshot from a local preview (for example with Playwright) and display the image in the conversation before asking for acceptance. A localhost link alone is not a reviewable preview for a remote user. Never deploy from the slot. Honor any required user acceptance before committing. A request to collect the shown result counts as acceptance. Follow repository rules for commits and pushes otherwise. Push is checked only when REQUIRE_PUSH=1 in .pitbox/config.
 - Then run: pitbox ready <slot> [notes]. ready refuses dirty slots, stub branches and unpushed commits (when REQUIRE_PUSH=1).
 - Never merge into the main branch, never deploy, never touch other slots.
 

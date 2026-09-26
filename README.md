@@ -30,7 +30,7 @@ integrator only       agent + task branch  agent + task branch  spare
 - A slot agent books a slot with `pitbox claim` (it atomically reserves a free slot and creates the task branch), verifies inside the slot, follows the repository's approval rules for commits and pushes, then marks the committed task branch ready.
 - The integrator collects ready slots, runs the repository's full checks, deploys, pushes, and releases the slots back to the pool.
 
-In slot mode, pitbox defers a repository's deploy-before-commit rule to the integrator. Slot agents can show visual changes with a local preview or Playwright screenshot, obtain any required user acceptance, then commit and mark the slot ready without deploying. A request to collect a shown result counts as acceptance. Direct work in the main checkout keeps the repository's normal delivery order.
+In slot mode, pitbox defers a repository's deploy-before-commit rule to the integrator. For visual changes, slot agents capture a screenshot from a local preview and display the image in the conversation before asking for acceptance. A localhost link alone is not a reviewable preview for a remote user. After any required acceptance, they commit and mark the slot ready without deploying. A request to collect the shown result counts as acceptance. Direct work in the main checkout keeps the repository's normal delivery order.
 
 ## Quick start
 
