@@ -91,11 +91,20 @@ slot_names() {
 }
 
 claim_one() {
-    local root="$1" name="$2" branch="$3" dir cur
+    local root="$1" name="$2" branch="$3" dir cur slot_head main_head dirty
     dir="$(slot_dir "$root" "$name")"
     [[ -d "$dir" ]] || die "no such slot: $name"
     cur="$(git -C "$dir" branch --show-current)"
     [[ "$cur" == "slot/$name" ]] || die "slot $name is busy on $cur, pick another slot"
+    dirty="$(dirty_count "$dir")"
+    [[ "$dirty" == 0 ]] || die "slot $name has $dirty uncommitted files, clean it before claiming"
+    [[ ! -f "$dir/TASK_READY.md" ]] || die "slot $name has a stale readiness marker, release it before claiming"
+    slot_head="$(git -C "$dir" rev-parse HEAD)"
+    main_head="$(git -C "$root" rev-parse "$MAIN_BRANCH")"
+    if [[ "$slot_head" != "$main_head" ]]; then
+        git -C "$dir" checkout -q -B "slot/$name" "$MAIN_BRANCH" || die "cannot sync slot $name to $MAIN_BRANCH"
+        run_hook "$root" "setup.sh" "$dir"
+    fi
     git -C "$dir" checkout -q -b "$branch" 2>/dev/null || die "cannot create branch $branch in $name, it already exists?"
     echo "pitbox: claimed $name for $branch"
 }

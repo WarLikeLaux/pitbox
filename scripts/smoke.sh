@@ -103,6 +103,7 @@ expect "merging task/other" collect wt2
 git -C "$T" log --merges --format=%s | grep -q "task/other"
 
 # Release falls back to setup.sh when release.sh is missing.
+echo '.setup-ran' >> "$T/.git/info/exclude"
 printf '#!/usr/bin/env bash\ntouch "$1/.setup-ran"\n' > "$T/.pitbox/setup.sh"
 rm "$T/.pitbox/release.sh"
 expect "released" release wt1
@@ -115,6 +116,15 @@ bash "$CLI" status >/dev/null
 # claim auto-picks the only free slot.
 bash "$CLI" claim
 [[ "$(git -C "$WT1DIR" branch --show-current)" == task/* ]] || { echo "claim should auto-pick the free wt1" >&2; exit 1; }
+bash "$CLI" release wt1 >/dev/null
+
+# A free slot can lag behind main. Claim must sync it before creating a task branch.
+rm "$WT1DIR/.setup-ran"
+git -C "$T" commit --allow-empty -qm "main advanced"
+main_tip="$(git -C "$T" rev-parse HEAD)"
+bash "$CLI" claim wt1 task/fresh
+[[ "$(git -C "$WT1DIR" rev-parse HEAD)" == "$main_tip" ]] || { echo "claim started from a stale slot" >&2; exit 1; }
+[[ -f "$WT1DIR/.setup-ran" ]] || { echo "claim skipped setup after syncing the slot" >&2; exit 1; }
 bash "$CLI" release wt1 >/dev/null
 
 echo "== MCP smoke"
