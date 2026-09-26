@@ -98,7 +98,7 @@ command = "node"
 args = ["/path/to/pitbox/mcp/server.mjs"]
 ```
 
-The server resolves the repository from the client's working directory, so run your agent inside the repository as usual.
+The server resolves the repository from the client's working directory, so run your agent inside the repository as usual. At connect it also injects workflow instructions into the session: an uninitialized repository gets the onboarding steps (run init, commit `.slots/`, run setup), an initialized one gets the role split and the task lifecycle.
 
 ### Tools reference
 

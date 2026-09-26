@@ -32,6 +32,35 @@ function runCli(args) {
 
 const MODE_RULE = "Workflow rule: one task = work in the main checkout, two or three parallel tasks = one slot each, the main checkout belongs to the integrator.";
 
+// The initialize result carries server instructions that the client shows to the
+// model. They are computed per session: an uninitialized repository gets the
+// onboarding steps, an initialized one gets the workflow summary.
+function repoRoot() {
+    let dir = process.cwd();
+    for (;;) {
+        if (existsSync(join(dir, ".git")) || existsSync(join(dir, ".slots", "config"))) return dir;
+        const parent = dirname(dir);
+        if (parent === dir) return null;
+        dir = parent;
+    }
+}
+
+function serverInstructions() {
+    const root = repoRoot();
+    if (!root) {
+        return "pitbox manages a fixed pool of git worktree slots for parallel coding agents. " +
+            "Start inside a git repository, then run the init tool once to write .slots/ templates and the setup tool to create the slots.";
+    }
+    if (!existsSync(join(root, ".slots", "config"))) {
+        return "This repository has no pitbox slot pool yet. Run the init tool once to write .slots/ templates, review and commit .slots/, " +
+            "then run the setup tool to create the fixed worktree slots. Start parallel tasks with claim afterwards.";
+    }
+    return "pitbox owns the task lifecycle around the fixed worktree slot pool of this repository: claim, work, ready, collect, release. " +
+        "Slot agents claim a free slot, work in it, commit, push and call ready, never merging or deploying. " +
+        "The integrator calls collect, runs the full checks, pushes, then calls release. " +
+        "Call guide for the full rules and status for the pool state.";
+}
+
 const TOOLS = [
     {
         name: "guide",
@@ -186,6 +215,7 @@ async function handleMessage(msg) {
                 protocolVersion: params?.protocolVersion ?? "2025-06-18",
                 capabilities: { tools: {} },
                 serverInfo: { name: "pitbox-mcp", version: VERSION },
+                instructions: serverInstructions(),
             });
             return;
         case "ping":

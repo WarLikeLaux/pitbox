@@ -55,6 +55,7 @@ const init = await request("initialize", {
     clientInfo: { name: "pitbox-smoke", version: "0.0.0" },
 });
 assert.equal(init.result.serverInfo.name, "pitbox-mcp");
+assert.ok(typeof init.result.instructions === "string" && init.result.instructions.includes("pitbox"), "missing server instructions");
 notification("notifications/initialized");
 
 const list = await request("tools/list", {});
