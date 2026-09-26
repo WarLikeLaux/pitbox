@@ -51,8 +51,9 @@ Repository configuration (committed alongside the code):
   .pitbox/release.sh            extra cleanup on release (defaults to setup.sh)
 
 In slot mode the .pitbox/config delivery policy overrides the repository's AGENTS.md delivery
-rules. AGENTS.md still defines checks and deploy commands for the integrator. pitbox never
-reads or edits AGENTS.md. The user's word always overrides the marker.
+rules. INTEGRATE_CHECKS decides when the integrator's checks run, AGENTS.md only names the
+check and deploy commands. pitbox never reads or edits AGENTS.md. The user's word always
+overrides the marker.
 EOF
 }
 
@@ -552,7 +553,7 @@ cmd_guide() {
 pitbox workflow guide
 
 policy: ready=$READY_MODE evidence=$EVIDENCE push=$push_label checks=$INTEGRATE_CHECKS
-Source of truth: in slot mode this policy overrides the repository's AGENTS.md delivery rules. AGENTS.md still defines checks and deploy commands for the integrator. pitbox never reads or edits AGENTS.md.
+Source of truth: in slot mode this policy overrides the repository's AGENTS.md delivery rules. INTEGRATE_CHECKS decides when the integrator's checks run, AGENTS.md only names the check and deploy commands. pitbox never reads or edits AGENTS.md.
 
 Modes:
 - One task: work directly in the main checkout.
