@@ -93,6 +93,7 @@ expect_fail setup 0
 [[ -d "$T/../$(basename "$T")-wt1" && -d "$T/../$(basename "$T")-wt2" ]] || { echo "setup failed" >&2; exit 1; }
 [[ ! -d "$T/../$(basename "$T")-wt3" ]] || { echo "setup ignored SLOTS=2" >&2; exit 1; }
 [[ -f "$STATE/wt1.path" && -f "$STATE/wt2.path" ]] || { echo "setup did not register the slots" >&2; exit 1; }
+[[ "$(bash "$CLI" status | awk '$1 == "wt1" {print $5}')" == "free" ]] || { echo "status must show an unclaimed slot as free" >&2; exit 1; }
 
 # A lost registry is rebuilt from the git worktree list.
 rm -rf "$COMMON/pitbox"
@@ -104,6 +105,7 @@ WT2DIR="$T/../$(basename "$T")-wt2"
 
 expect_fail ready wt1                # ready must refuse a stub branch
 bash "$CLI" claim wt1 task/demo
+[[ "$(bash "$CLI" status | awk '$1 == "wt1" {print $5}')" == "work" ]] || { echo "status must show a claimed slot as work" >&2; exit 1; }
 expect_fail claim wt1 task/dup       # claim must refuse a busy slot
 bash "$CLI" claim wt2 task/temporary >/dev/null
 expect_fail claim                      # do not create more slots when all are busy

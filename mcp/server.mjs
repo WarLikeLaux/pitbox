@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 
-const VERSION = "0.7.2";
+const VERSION = "0.7.3";
 const PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_TIMEOUT_MS = 120000;
 
@@ -58,7 +58,7 @@ function serverInstructions() {
 const TOOLS = [
     {
         name: "status",
-        description: "Show the registered slot paths, branches, dirty counts, commits ahead of main, and work, ready, or collected state.",
+        description: "Show slot paths, branches, dirty counts, commits ahead of main, and free, work, ready, or collected state. A clean slot/wtN branch is free.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
         args: () => ["status"],
     },

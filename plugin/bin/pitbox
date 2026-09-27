@@ -14,7 +14,7 @@
 # Requires git 2.31+ (--path-format) and bash.
 set -Eeuo pipefail
 
-VERSION="0.7.2"
+VERSION="0.7.3"
 
 usage() {
     cat <<EOF
@@ -159,6 +159,8 @@ slot_state() {
         echo "collected"
     elif [[ -f "$(marker_file "$root" "$name")" ]]; then
         echo "ready"
+    elif [[ "$(git -C "$dir" branch --show-current)" == "slot/$name" && "$(dirty_count "$dir")" == 0 ]]; then
+        echo "free"
     else
         echo "work"
     fi
@@ -252,7 +254,7 @@ claim_one() {
 }
 
 cmd_claim() {
-    local root want="" name="" free s has_slot=0
+    local root want="" name="" free s dir has_slot=0
     root="$(main_worktree)"
     load_config "$root"
     case $# in
@@ -278,7 +280,8 @@ cmd_claim() {
         free=""
         for s in $(slot_names "$root"); do
             has_slot=1
-            if [[ "$(git -C "$(slot_dir "$root" "$s")" branch --show-current)" == "slot/$s" ]]; then
+            dir="$(slot_dir "$root" "$s")"
+            if [[ "$(slot_state "$root" "$s" "$dir")" == "free" ]]; then
                 free="$s"
                 break
             fi
