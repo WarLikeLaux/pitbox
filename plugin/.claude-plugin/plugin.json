@@ -1,7 +1,7 @@
 {
   "name": "pitbox",
   "displayName": "pitbox",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Reusable Git worktree slots and handoff markers for coding agents, with MCP tools and a workflow skill.",
   "author": { "name": "WarLikeLaux", "url": "https://github.com/WarLikeLaux" },
   "repository": "https://github.com/WarLikeLaux/pitbox",

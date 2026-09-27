@@ -1,17 +1,23 @@
 #!/usr/bin/env node
 // MCP stdio round-trip: initialize, tools/list, tools/call (status, claim).
-// Usage: node scripts/mcp-smoke.mjs <git-repo-path>
+// Usage: node scripts/mcp-smoke.mjs <git-repo-path> [server-path] [--without-cli-path]
 import { spawn } from "node:child_process";
-import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { strict as assert } from "node:assert";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const serverPath = join(here, "..", "mcp", "server.mjs");
+const serverPath = process.argv[3] ?? join(here, "..", "mcp", "server.mjs");
 const repo = process.argv[2] ?? process.cwd();
+const env = { ...process.env };
+if (process.argv.includes("--without-cli-path")) {
+    delete env.PITBOX_BIN;
+    env.PATH = (env.PATH ?? "").split(delimiter).filter((dir) => !existsSync(join(dir, "pitbox"))).join(delimiter);
+}
 
 // A plugin host may start the server outside the repository.
-const child = spawn("node", [serverPath], { cwd: dirname(repo) });
+const child = spawn(process.execPath, [serverPath], { cwd: dirname(repo), env });
 let buffer = "";
 const pending = new Map();
 let nextId = 1;

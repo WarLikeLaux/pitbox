@@ -34,7 +34,7 @@ Pitbox does not assign agent roles. To route ordinary tasks into slots and reser
 
 ## Setup
 
-Requires Bash, Git 2.31+, and Node.js for MCP. Run `pitbox setup` inside a Git repository to create three reusable slots next to its main checkout. Pass a count to create a different pool:
+Requires Bash, Git 2.31+, and Node.js for MCP. Run `pitbox setup` with the standalone CLI, or the MCP `setup` tool, inside a Git repository to create three reusable slots next to its main checkout. Pass a count to create a different pool:
 
 ```bash
 pitbox setup 5
@@ -70,7 +70,7 @@ Slot state is stored under `pitbox/slots/` in the common Git directory, outside 
 
 The MCP server is a stdio facade over the CLI. Every tool requires `repo`, an absolute path to the target repository or worktree, because plugin hosts can start the server from a cache directory. A hook timeout defaults to 120 seconds and can be changed with `PITBOX_TIMEOUT_MS`.
 
-For a standalone MCP connection, use `node /path/to/pitbox/mcp/server.mjs`. The plugin bundles that server and one short `workflow` skill.
+For a standalone MCP connection, use `node /path/to/pitbox/mcp/server.mjs`. The plugin bundles the server, CLI, and one short `workflow` skill. MCP tools use the bundled CLI, so installing the plugin does not require a separate CLI installation. To call `pitbox` directly from a shell, install the CLI once on that machine from this checkout with `install -D -m 755 bin/pitbox "$HOME/.local/bin/pitbox"` and put `$HOME/.local/bin` on `PATH`.
 
 Claude Code:
 

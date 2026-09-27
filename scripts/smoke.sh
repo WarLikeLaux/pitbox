@@ -31,6 +31,7 @@ trap 'rm -rf "$T" "$T"-wt1 "$T"-wt2 "$T"-legacy' EXIT
 
 # The plugin bundles its own copy of the MCP server, keep them identical.
 diff -q "$REPO/mcp/server.mjs" "$REPO/plugin/mcp/server.mjs" || { echo "plugin/mcp/server.mjs is out of sync with mcp/server.mjs" >&2; exit 1; }
+cmp "$REPO/bin/pitbox" "$REPO/plugin/bin/pitbox" || { echo "plugin/bin/pitbox is out of sync with bin/pitbox" >&2; exit 1; }
 
 node - <<'NODE'
 const fs = require('node:fs');
@@ -253,6 +254,10 @@ sed -i '/^SLOTS=3$/d' "$T/.pitbox/config"
 
 echo "== MCP smoke"
 node "$REPO/scripts/mcp-smoke.mjs" "$T"
+bash "$CLI" release wt1 >/dev/null
+
+echo "== bundled plugin MCP smoke without standalone CLI"
+node "$REPO/scripts/mcp-smoke.mjs" "$T" "$REPO/plugin/mcp/server.mjs" --without-cli-path
 
 # Rapid automatic claims must use different branch names across the shared Git directory.
 bash "$CLI" release wt1 >/dev/null
