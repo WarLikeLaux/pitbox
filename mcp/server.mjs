@@ -1,14 +1,12 @@
 #!/usr/bin/env node
 // pitbox MCP server: zero-dependency stdio JSON-RPC facade over the pitbox CLI.
-// The workflow rules are repository-specific and rendered by `pitbox guide`
-// from .pitbox/config, so descriptions here only say when to call a tool.
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 
-const VERSION = "0.6.1";
+const VERSION = "0.7.0";
 const PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_TIMEOUT_MS = 120000;
 
@@ -48,64 +46,42 @@ function runCli(args, repo) {
     });
 }
 
-const MODE_RULE = "Follow the repository's task routing rules. A single task may use a slot. Slot workers never integrate.";
-
-// Plugin hosts can start this server inside their cache, so initialize cannot
-// infer the caller's repository from process.cwd().
+// Plugin hosts can run this server from a cache, so each tool requires an explicit repo path.
 function serverInstructions() {
-    return "pitbox manages a fixed pool of git worktree slots per repository. " +
+    return "Pitbox manages reusable Git worktree slots and handoff markers. " +
         "Pass repo as the absolute path to the target repository or worktree on every call. " +
-        "Lifecycle: an agent claims a slot, works in it, commits, and marks it ready; on user feedback in a ready " +
-        "slot it calls unready first and ready again after the fix; only on an explicit user " +
-        "request the integrator collects ready slots, runs the checks the repository policy defines, pushes, " +
-        "and releases the slots. Deploy only if repository instructions require it. A ready marker never merges or deploys. " +
-        "A conversation that worked in a slot is a worker and never integrates: it finishes with ready, and collection belongs to a fresh conversation. " +
-        "Repository instructions decide task routing and delivery. Call guide with the repo path for the slot protocol. " +
-        "When the repository uses Pitbox but has no .pitbox/config, run init, review and commit .pitbox/, then run setup.";
+        "Follow repository instructions for task routing, checks, review, CI, push, and deployment. " +
+        "A worker claims a slot, commits its work, and marks the slot ready. " +
+        "Only a separate session explicitly asked by the user collects ready slots. " +
+        "After repository delivery steps, the integrator releases collected slots. " +
+        "Pitbox does not run tests, check CI, or deploy.";
 }
 
 const TOOLS = [
     {
-        name: "guide",
-        description:
-            "Print the workflow rules for this repository, rendered from its .pitbox/config policy " +
-            "(ready mode, evidence, push requirement). Repository instructions govern task routing and delivery. " +
-            "Call guide before slot work.",
-        inputSchema: { type: "object", properties: {}, additionalProperties: false },
-        args: () => ["guide"],
-    },
-    {
         name: "status",
-        description:
-            "Show the pitbox slot pool for the repository: branch, dirty files, commits ahead of main, " +
-            "state (work/ready/collected) per slot and the active policy line. " + MODE_RULE,
+        description: "Show the registered slot paths, branches, dirty counts, commits ahead of main, and work, ready, or collected state.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
         args: () => ["status"],
     },
     {
         name: "setup",
-        description:
-            "Create the fixed slot worktrees wt1..wtN next to the main checkout and register them. " +
-            "Slots are a fixed pool: create them once and reuse them, never spawn ad-hoc worktrees. " +
-            "Call when repository instructions route work to slots and no slots exist. " + MODE_RULE,
+        description: "Create the fixed slot pool. Omit count to use SLOTS from .pitbox/config or three slots by default.",
         inputSchema: {
             type: "object",
-            properties: { count: { type: "integer", minimum: 1, maximum: 10, default: 3, description: "How many slots to create, default 3" } },
+            properties: { count: { type: "integer", minimum: 1, maximum: 10, description: "Number of slots to create" } },
             additionalProperties: false,
         },
         args: (a) => (a.count !== undefined ? ["setup", String(a.count)] : ["setup"]),
     },
     {
         name: "claim",
-        description:
-            "Take a free slot for a new task: pitbox books a slot atomically and creates your task " +
-            "branch in it. Omit slot to auto-pick the first free one. Never book a slot from status by hand, " +
-            "two agents can race. Work in the returned path, never touch other slots. " + MODE_RULE,
+        description: "Atomically take a free slot and create a task branch. Omit slot to let Pitbox choose one. Continue work in the returned path.",
         inputSchema: {
             type: "object",
             properties: {
-                slot: { type: "string", description: "Slot name, e.g. wt1; the first free slot is auto-picked when omitted" },
-                name: { type: "string", description: "Task branch name, e.g. task/feat-auth; a timestamped task/* name is generated when omitted" },
+                slot: { type: "string", description: "Slot name, e.g. wt1; omit to choose a free slot" },
+                name: { type: "string", description: "Task branch name; omit to generate one" },
             },
             additionalProperties: false,
         },
@@ -117,16 +93,12 @@ const TOOLS = [
     },
     {
         name: "ready",
-        description:
-            "Mark the slot's task ready after the work is committed: records the branch and its exact HEAD in the " +
-            "pitbox state inside .git. Never merges, deploys, or starts collection. When to call it (immediately " +
-            "after checks, or only after user confirmation) and what proof of work to show is defined by the " +
-            "repository policy, see guide.",
+        description: "Record a clean task branch and its exact HEAD as ready. This does not run checks or merge the branch.",
         inputSchema: {
             type: "object",
             properties: {
                 slot: { type: "string", description: "Slot name, e.g. wt1" },
-                note: { type: "string", description: "Optional note recorded with the marker" },
+                note: { type: "string", description: "Optional handoff note" },
             },
             required: ["slot"],
             additionalProperties: false,
@@ -135,9 +107,7 @@ const TOOLS = [
     },
     {
         name: "unready",
-        description:
-            "Worker tool: remove the readiness marker while handling user feedback in a ready slot. The slot " +
-            "returns to work and a collect of ready slots skips it until you run ready again after the fix.",
+        description: "Remove the ready marker while continuing work in a slot after feedback.",
         inputSchema: {
             type: "object",
             properties: { slot: { type: "string", description: "Slot name, e.g. wt1" } },
@@ -148,34 +118,18 @@ const TOOLS = [
     },
     {
         name: "collect",
-        description:
-            "Integrator tool, call only on an explicit user request: merge the slot's task branch into the main " +
-            "branch with a --no-ff merge commit. Pass the literal string 'ready' to collect every ready slot; " +
-            "already collected slots are skipped until released. If the merge stops with conflicts, resolve them " +
-            "in the main checkout, commit, and run collect again. Refusals are final, do not force. After " +
-            "collecting, run the required checks, follow repository delivery rules, and release each collected slot. Deploy only if the repository requires it.",
+        description: "Merge a slot branch into main when the user explicitly requests integration. Use slot=ready for only marked slots. A named unmarked slot produces a warning. Refuses dirty main or changed ready HEAD.",
         inputSchema: {
             type: "object",
-            properties: { slot: { type: "string", description: "Slot name, e.g. wt1, or the literal string 'ready'" } },
+            properties: { slot: { type: "string", description: "Slot name or the literal string ready" } },
             required: ["slot"],
             additionalProperties: false,
         },
         args: (a) => ["collect", a.slot],
     },
     {
-        name: "ci",
-        description:
-            "Integrator tool: report the CI status of the pushed main commit, green, red, or pending. " +
-            "Run it after the push and watch it. Follow repository delivery rules after it passes.",
-        inputSchema: { type: "object", properties: {}, additionalProperties: false },
-        args: () => ["ci"],
-    },
-    {
         name: "release",
-        description:
-            "Integrator tool: reset the slot to the main branch, delete the merged task branch, clear its state, " +
-            "run .pitbox/release.sh (or setup.sh). Call only after collect succeeded and the main branch passed " +
-            "its checks, and was deployed and pushed when the repository's rules require it.",
+        description: "Return a slot to the pool after repository delivery or an intentional task abort. Resets the worktree, preserves unmerged branches, and runs its optional release hook.",
         inputSchema: {
             type: "object",
             properties: { slot: { type: "string", description: "Slot name, e.g. wt1" } },
@@ -183,22 +137,6 @@ const TOOLS = [
             additionalProperties: false,
         },
         args: (a) => ["release", a.slot],
-    },
-    {
-        name: "init",
-        description:
-            "Write .pitbox/ templates (config, setup.sh, release.sh) for this repository so pitbox knows how to " +
-            "prepare and clean slots. Auto-detects the stack (bun, php-docker) or takes an explicit stack. " +
-            "Run once per repository, review and commit the result.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                stack: { type: "string", enum: ["bun", "php-docker"], description: "Stack template, auto-detected when omitted" },
-                force: { type: "boolean", description: "Overwrite an existing .pitbox/ directory", default: false },
-            },
-            additionalProperties: false,
-        },
-        args: (a) => ["init", ...(a.stack ? ["--stack", a.stack] : []), ...(a.force ? ["--force"] : [])],
     },
 ].map((tool) => ({
     ...tool,

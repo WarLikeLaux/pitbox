@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// MCP stdio round-trip: initialize, tools/list, tools/call (guide, status, init).
+// MCP stdio round-trip: initialize, tools/list, tools/call (status, claim).
 // Usage: node scripts/mcp-smoke.mjs <git-repo-path>
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
@@ -58,28 +58,25 @@ const init = await request("initialize", {
 // The server reports its own supported protocol version, it never echoes the client's.
 assert.equal(init.result.protocolVersion, "2025-06-18");
 assert.equal(init.result.serverInfo.name, "pitbox-mcp");
-assert.ok(typeof init.result.instructions === "string" && init.result.instructions.includes("pitbox"), "missing server instructions");
+assert.ok(typeof init.result.instructions === "string" && /pitbox/i.test(init.result.instructions), "missing server instructions");
 assert.ok(init.result.instructions.includes("repo"));
 notification("notifications/initialized");
 
 const list = await request("tools/list", {});
 const names = list.result.tools.map((t) => t.name);
-for (const expected of ["guide", "status", "claim", "setup", "ready", "collect", "release", "init"]) {
+for (const expected of ["status", "claim", "setup", "ready", "unready", "collect", "release"]) {
     assert.ok(names.includes(expected), `missing tool ${expected}`);
 }
+assert.equal(names.length, 7);
 assert.ok(list.result.tools.every((t) => t.inputSchema && t.description.length > 40));
 for (const tool of list.result.tools) {
     assert.ok(tool.inputSchema.required.includes("repo"), `${tool.name} must require repo`);
 }
 
-const guide = await request("tools/call", { name: "guide", arguments: { repo } });
-assert.equal(guide.result.isError, false);
-assert.ok(guide.result.content[0].text.includes("pitbox workflow guide"));
-
 const missingRepo = await request("tools/call", { name: "status", arguments: {} });
 assert.equal(missingRepo.result.isError, true);
 
-const bogusRepo = await request("tools/call", { name: "guide", arguments: { repo: "not/absolute" } });
+const bogusRepo = await request("tools/call", { name: "status", arguments: { repo: "not/absolute" } });
 assert.equal(bogusRepo.result.isError, true);
 
 const status = await request("tools/call", { name: "status", arguments: { repo } });
@@ -89,10 +86,6 @@ assert.ok(status.result.content[0].text.includes("main branch"));
 const claim = await request("tools/call", { name: "claim", arguments: { repo, name: "task/mcp" } });
 assert.equal(claim.result.isError, false, `claim failed: ${claim.result.content[0].text}`);
 assert.ok(claim.result.content[0].text.includes("claimed") && claim.result.content[0].text.includes("task/mcp"));
-
-const initCall = await request("tools/call", { name: "init", arguments: { repo, stack: "bun", force: true } });
-assert.equal(initCall.result.isError, false, `init failed: ${initCall.result.content[0].text}`);
-assert.ok(initCall.result.content[0].text.includes(".pitbox/"));
 
 const bogus = await request("tools/call", { name: "nope", arguments: {} });
 assert.equal(bogus.error.code, -32602);

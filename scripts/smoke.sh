@@ -27,7 +27,7 @@ CLI="$REPO/bin/pitbox"
 
 T="$(mktemp -d)"
 # Slot dirs and the bare remote live next to T, not inside it, clean them too.
-trap 'rm -rf "$T" "$T"-wt1 "$T"-wt2 "$T"-smoke-remote.git "$T"-legacy' EXIT
+trap 'rm -rf "$T" "$T"-wt1 "$T"-wt2 "$T"-legacy' EXIT
 
 # The plugin bundles its own copy of the MCP server, keep them identical.
 diff -q "$REPO/mcp/server.mjs" "$REPO/plugin/mcp/server.mjs" || { echo "plugin/mcp/server.mjs is out of sync with mcp/server.mjs" >&2; exit 1; }
@@ -57,11 +57,8 @@ git -C "$T" config user.name "pitbox smoke"
 git -C "$T" commit --allow-empty -qm "init"
 
 cd "$T"
-printf '# Project rules\n\n- Deploy before commit.\n' > AGENTS.md
+printf '# Project rules\n\n- Run checks before ready.\n' > AGENTS.md
 agents_before="$(sha256sum AGENTS.md | cut -d' ' -f1)"
-bash "$CLI" init --stack bun
-[[ -f "$T/.pitbox/config" && -x "$T/.pitbox/setup.sh" ]] || { echo "init failed" >&2; exit 1; }
-[[ "$(sha256sum AGENTS.md | cut -d' ' -f1)" == "$agents_before" ]] || { echo "init changed AGENTS.md" >&2; exit 1; }
 expect() {
     local pattern="$1"
     shift
@@ -77,18 +74,10 @@ expect_fail() {
     fi
 }
 
-expect "pitbox workflow guide" guide
-bash "$CLI" init --stack bun --force >/dev/null
-[[ "$(sha256sum AGENTS.md | cut -d' ' -f1)" == "$agents_before" ]] || { echo "init --force changed AGENTS.md" >&2; exit 1; }
-# Hooks must not need bun in the test environment, replace with no-ops.
+mkdir -p "$T/.pitbox"
+printf 'MAIN_BRANCH=main\nSLOTS=2\n' > "$T/.pitbox/config"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$T/.pitbox/setup.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$T/.pitbox/release.sh"
-# Pin the main branch, otherwise autodetection falls back to the current branch of the main
-# checkout and the collect off-branch guard would have nothing to compare against.
-echo "MAIN_BRANCH=main" >> "$T/.pitbox/config"
-# Pin the pool size, a bare setup must create exactly wt1 and wt2.
-echo "SLOTS=2" >> "$T/.pitbox/config"
-# The documented flow commits .pitbox, and the collect guard demands a clean main checkout.
 git -C "$T" add .pitbox AGENTS.md
 git -C "$T" commit -qm "slots"
 
@@ -97,9 +86,9 @@ COMMON="$(git -C "$T" rev-parse --path-format=absolute --git-common-dir)"
 STATE="$COMMON/pitbox/slots"
 
 expect "no slots yet" status
-expect "policy: ready=auto evidence=auto push=off" status
 # SLOTS in the config decides the pool size for a bare setup.
 bash "$CLI" setup
+expect_fail setup 0
 [[ -d "$T/../$(basename "$T")-wt1" && -d "$T/../$(basename "$T")-wt2" ]] || { echo "setup failed" >&2; exit 1; }
 [[ ! -d "$T/../$(basename "$T")-wt3" ]] || { echo "setup ignored SLOTS=2" >&2; exit 1; }
 [[ -f "$STATE/wt1.path" && -f "$STATE/wt2.path" ]] || { echo "setup did not register the slots" >&2; exit 1; }
@@ -147,13 +136,7 @@ expect "already collected" collect ready   # a collected slot is skipped, collec
 
 git -C "$WT2DIR" checkout -q -b task/other
 git -C "$WT2DIR" commit --allow-empty -qm "other work"
-echo "REQUIRE_PUSH=1" >> "$T/.pitbox/config"
-expect_fail ready wt2                # REQUIRE_PUSH=1 must refuse an unpushed branch
-git -C "$T" init -q --bare "${T}-smoke-remote.git"
-git -C "$WT2DIR" remote add origin "${T}-smoke-remote.git"
-git -C "$WT2DIR" push -q -u origin task/other
 bash "$CLI" ready wt2 >/dev/null
-sed -i '/^REQUIRE_PUSH=1$/d' "$T/.pitbox/config"
 expect "merging task/other" collect wt2
 [[ -f "$STATE/wt2.collected" ]] || { echo "collect wt2 must record collected state" >&2; exit 1; }
 git -C "$T" log --merges --format=%s | grep -q "task/other"
@@ -252,74 +235,44 @@ expect "merging task/unready" collect ready
 bash "$CLI" release wt1 >/dev/null
 
 # deploy-guard passes on a working pool and refuses a ready and uncollected slot.
-expect "deploy-guard passed" deploy-guard
+expect "no ready slots await collection" deploy-guard
 bash "$CLI" claim wt1 task/guard >/dev/null
 git -C "$WT1DIR" commit --allow-empty -qm "guard work"
 bash "$CLI" ready wt1 >/dev/null
 expect_fail deploy-guard
 bash "$CLI" unready wt1 >/dev/null
-expect "deploy-guard passed" deploy-guard
+expect "no ready slots await collection" deploy-guard
 bash "$CLI" release wt1 >/dev/null
 
-# The guide is rendered from the policy config.
-printf 'READY_MODE=confirm\nEVIDENCE=none\nINTEGRATE_CHECKS=ci\n' >> "$T/.pitbox/config"
-guide_out="$(bash "$CLI" guide)"
-echo "$guide_out" | grep -q "policy: ready=confirm evidence=none push=off checks=ci" || { echo "guide must print the policy" >&2; exit 1; }
-echo "$guide_out" | grep -q "after the user explicitly confirms" || { echo "confirm mode must demand user confirmation" >&2; exit 1; }
-echo "$guide_out" | grep -q "Checks belong to CI" || { echo "ci mode must delegate checks to CI" >&2; exit 1; }
-if echo "$guide_out" | grep -qi "screenshot"; then echo "EVIDENCE=none must not mention screenshots" >&2; exit 1; fi
-if echo "$guide_out" | grep -q "full checks"; then echo "INTEGRATE_CHECKS=ci must not demand a local full run" >&2; exit 1; fi
-sed -i '/^READY_MODE=confirm$/d;/^EVIDENCE=none$/d;/^INTEGRATE_CHECKS=ci$/d' "$T/.pitbox/config"
-guide_out="$(bash "$CLI" guide)"
-echo "$guide_out" | grep -q "policy: ready=auto evidence=auto push=off checks=auto" || { echo "guide must return to the defaults" >&2; exit 1; }
-echo "$guide_out" | grep -q "manually resolved conflicts" || { echo "auto mode must gate the full checks on conflicts" >&2; exit 1; }
-echo "$guide_out" | grep -q "pool never waits for CI" || { echo "auto mode must keep the pool free of CI waits" >&2; exit 1; }
-
-echo "INTEGRATE_CHECKS=full" >> "$T/.pitbox/config"
-guide_out="$(bash "$CLI" guide)"
-echo "$guide_out" | grep -q "checks=full" || { echo "guide must print checks=full" >&2; exit 1; }
-echo "$guide_out" | grep -q "Run the repository's full checks" || { echo "full mode must demand the full checks" >&2; exit 1; }
-sed -i '/^INTEGRATE_CHECKS=full$/d' "$T/.pitbox/config"
-
-echo "READY_MODE=bogus" >> "$T/.pitbox/config"
-expect_fail status                   # invalid policy values are refused
-sed -i '/^READY_MODE=bogus$/d' "$T/.pitbox/config"
-echo "INTEGRATE_CHECKS=bogus" >> "$T/.pitbox/config"
+# Only slot settings are accepted. The config is parsed as data, not executed.
+echo "READY_MODE=confirm" >> "$T/.pitbox/config"
 expect_fail status
-sed -i '/^INTEGRATE_CHECKS=bogus$/d' "$T/.pitbox/config"
-
+sed -i '/^READY_MODE=confirm$/d' "$T/.pitbox/config"
+echo "SLOTS=\$(touch $T/config-executed)" >> "$T/.pitbox/config"
+expect_fail status
+[[ ! -e "$T/config-executed" ]] || { echo "config executed shell code" >&2; exit 1; }
+sed -i '/^SLOTS=/d' "$T/.pitbox/config"
+echo "SLOTS=2" >> "$T/.pitbox/config"
 echo "SLOTS=bogus" >> "$T/.pitbox/config"
-expect_fail status                   # an invalid pool size is refused
+expect_fail status
 sed -i '/^SLOTS=bogus$/d' "$T/.pitbox/config"
-# The exact pool size stays silent, a mismatch warns.
 echo "SLOTS=3" >> "$T/.pitbox/config"
 expect "wants SLOTS=3, the pool has 2 slots" status
 sed -i '/^SLOTS=3$/d' "$T/.pitbox/config"
-
-# pitbox ci: none without a github origin, none without gh, failure on a broken gh.
-expect "CI: none" ci
-git -C "$T" remote set-url origin https://github.com/example/split.git
-# A shadow bin with every binary except gh keeps git working while gh goes missing.
-SHADOWBIN="$(mktemp -d)"
-for _dir in /usr/bin /bin; do
-    for _f in "$_dir"/*; do
-        [[ "$(basename "$_f")" == "gh" ]] && continue
-        ln -s "$_f" "$SHADOWBIN/" 2>/dev/null || true
-    done
-done
-PATH="$SHADOWBIN" bash "$CLI" ci >/dev/null 2>&1 || { echo "pitbox ci without gh should pass" >&2; exit 1; }
-FAKEBIN="$(mktemp -d)"
-printf '#!/usr/bin/env bash\nexit 7\n' > "$FAKEBIN/gh"
-chmod +x "$FAKEBIN/gh"
-if PATH="$FAKEBIN:$PATH" bash "$CLI" ci >/dev/null 2>&1; then
-    echo "pitbox ci should fail on a broken gh" >&2
-    exit 1
-fi
-rm -rf "$SHADOWBIN" "$FAKEBIN"
-git -C "$T" remote set-url origin "${T}-smoke-remote.git"
+[[ "$(sha256sum AGENTS.md | cut -d' ' -f1)" == "$agents_before" ]] || { echo "pitbox changed AGENTS.md" >&2; exit 1; }
 
 echo "== MCP smoke"
 node "$REPO/scripts/mcp-smoke.mjs" "$T"
+
+# Rapid automatic claims must use different branch names across the shared Git directory.
+bash "$CLI" release wt1 >/dev/null
+bash "$CLI" claim wt1 >/dev/null
+auto_branch_1="$(git -C "$WT1DIR" branch --show-current)"
+bash "$CLI" claim wt2 >/dev/null
+auto_branch_2="$(git -C "$WT2DIR" branch --show-current)"
+[[ "$auto_branch_1" != "$auto_branch_2" ]] || { echo "automatic branch names collided" >&2; exit 1; }
+bash "$CLI" release wt1 >/dev/null
+bash "$CLI" release wt2 >/dev/null
 
 # A legacy .slots directory must not supply configuration to the new CLI.
 LEGACY="${T}-legacy"

@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # pitbox: fixed pool of git worktree slots for parallel agent tasks.
 #
-# Global tool, repo-specific behavior lives in .pitbox/ inside each repository:
-#   .pitbox/config       shell vars: MAIN_BRANCH, SLOTS, READY_MODE, EVIDENCE,
-#                        REQUIRE_PUSH, INTEGRATE_CHECKS
+# Optional repository files:
+#   .pitbox/config       MAIN_BRANCH and SLOTS
 #   .pitbox/setup.sh     called with the slot dir as $1 after worktree add and on release
 #   .pitbox/release.sh   optional, called with the slot dir as $1 on release
 #
@@ -15,49 +14,34 @@
 # Requires git 2.31+ (--path-format) and bash.
 set -Eeuo pipefail
 
-VERSION="0.6.1"
+VERSION="0.7.0"
 
 usage() {
     cat <<EOF
 pitbox $VERSION: fixed pool of git worktree slots for parallel agent tasks
 
 Usage (run anywhere inside the repository):
-  pitbox init [--stack S] [--force]   Write .pitbox/ templates
   pitbox setup [N]              Create slot worktrees wt1..wtN (default 3), run .pitbox/setup.sh in each
   pitbox claim [slot|branch-name] [branch-name]  Book a free slot and create the task branch (auto-picks a slot)
-  pitbox status                 Show slots: branch, dirty files, commits ahead of main, state, policy
+  pitbox status                 Show slots: branch, dirty files, commits ahead of main, state
   pitbox ready <slot> [note]    Mark the slot's task ready (refuses dirty or empty slots)
   pitbox unready <slot>         Remove the readiness marker while handling feedback, the slot returns to work
   pitbox collect <slot|ready>   Merge the slot branch into the main branch (--no-ff)
   pitbox release <slot>         Reset the slot to main, delete the merged branch, run release hooks
-  pitbox ci                     CI status of the pushed main commit: green (exit 0), red (exit 1), pending (exit 2)
   pitbox deploy-guard           Exit nonzero while a slot is ready and uncollected, for deploy scripts to call as a gate
-  pitbox guide                  Print the workflow rules for this repository, rendered from .pitbox/config
   pitbox mcp                    Start the MCP server (needs the mcp/server.mjs from the repository)
   pitbox version                Print the version
   pitbox help                   Show this help
 
-Repository configuration (committed alongside the code):
+Optional repository configuration:
   .pitbox/config                shell vars:
                                   MAIN_BRANCH=<branch>
                                   SLOTS=<N>                 pool size for setup without an argument (default 3)
-                                  READY_MODE=auto|confirm   auto: commit and mark ready without waiting
-                                                            for review (default). confirm: commit always,
-                                                            mark ready only after user confirmation.
-                                  EVIDENCE=auto|screenshot|requests|none
-                                                            what slot agents show as proof of work (default auto)
-                                  REQUIRE_PUSH=1            demand pushed branches on ready
-                                  INTEGRATE_CHECKS=auto|full|ci
-                                                            auto (default): run the repository's full checks
-                                                            only after a merge with manually resolved
-                                                            conflicts. full: always before deploy.
-                                                            ci: never locally, push and let CI verify.
-  .pitbox/setup.sh              install deps in a fresh slot (bun install, composer install, ...)
-  .pitbox/release.sh            extra cleanup on release (defaults to setup.sh)
+  .pitbox/setup.sh              optional slot preparation hook
+  .pitbox/release.sh            optional slot reset hook (defaults to setup.sh)
 
-Repository instructions decide which tasks use slots and whether integration includes a deploy.
-Use AGENTS.md to exempt slot workers from conflicting direct-work delivery rules. pitbox never
-reads or edits AGENTS.md. The user's word always overrides the marker.
+Repository instructions decide task routing, checks, review, CI, push, and deployment.
+Pitbox records slot state and performs Git operations. It never reads or edits AGENTS.md.
 EOF
 }
 
@@ -97,37 +81,25 @@ lock_dir() {
 }
 
 load_config() {
-    local root="$1"
+    local root="$1" line
     MAIN_BRANCH=""
-    READY_MODE="auto"
-    EVIDENCE="auto"
+    SLOTS=""
     if [[ -f "$root/.pitbox/config" ]]; then
-        # shellcheck disable=SC1091
-        source "$root/.pitbox/config"
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            case "$line" in
+                MAIN_BRANCH=*) MAIN_BRANCH="${line#MAIN_BRANCH=}" ;;
+                SLOTS=*) SLOTS="${line#SLOTS=}" ;;
+                *) die "unsupported .pitbox/config entry ${line%%=*}; use only MAIN_BRANCH and SLOTS" ;;
+            esac
+        done < "$root/.pitbox/config"
     fi
-    REQUIRE_PUSH="${REQUIRE_PUSH:-0}"
-    READY_MODE="${READY_MODE:-auto}"
-    EVIDENCE="${EVIDENCE:-auto}"
-    INTEGRATE_CHECKS="${INTEGRATE_CHECKS:-auto}"
-    case "$READY_MODE" in
-        auto|confirm) ;;
-        *) die "invalid READY_MODE: $READY_MODE (supported: auto, confirm)" ;;
-    esac
-    case "$EVIDENCE" in
-        auto|screenshot|requests|none) ;;
-        *) die "invalid EVIDENCE: $EVIDENCE (supported: auto, screenshot, requests, none)" ;;
-    esac
-    case "$INTEGRATE_CHECKS" in
-        auto|full|ci) ;;
-        *) die "invalid INTEGRATE_CHECKS: $INTEGRATE_CHECKS (supported: auto, full, ci)" ;;
-    esac
-    case "$REQUIRE_PUSH" in
-        0|1) ;;
-        *) die "invalid REQUIRE_PUSH: $REQUIRE_PUSH (supported: 0, 1)" ;;
-    esac
-    SLOTS="${SLOTS:-}"
     if [[ -n "$SLOTS" ]] && ! [[ "$SLOTS" =~ ^[1-9][0-9]*$ ]]; then
         die "invalid SLOTS: $SLOTS (a positive number)"
+    fi
+    if [[ -n "$MAIN_BRANCH" ]] && ! git check-ref-format --branch "$MAIN_BRANCH" >/dev/null 2>&1; then
+        die "invalid MAIN_BRANCH: $MAIN_BRANCH"
     fi
     if [[ -z "${MAIN_BRANCH}" ]]; then
         MAIN_BRANCH="$(git -C "$root" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')" || MAIN_BRANCH=""
@@ -296,7 +268,7 @@ cmd_claim() {
         2) want="$1"; name="$2" ;;
         *) die "usage: pitbox claim [slot|branch-name] [branch-name]" ;;
     esac
-    [[ -n "$name" ]] || name="task/$(date -u +%Y%m%d-%H%M%S)"
+    [[ -n "$name" ]] || name="task/$(date -u +%Y%m%d-%H%M%S)-$BASHPID"
     # Deliberately global so the single-quoted EXIT trap below still sees it.
     lock="$(lock_dir "$root")"
     acquire_lock "$lock"
@@ -325,7 +297,7 @@ cmd_setup() {
     root="$(main_worktree)"
     load_config "$root"
     count="${1:-${SLOTS:-3}}"
-    [[ "$count" =~ ^[0-9]+$ ]] || die "setup takes a number, got: $count"
+    [[ "$count" =~ ^[1-9][0-9]*$ ]] || die "setup takes a positive number, got: $count"
     lock="$(lock_dir "$root")"
     acquire_lock "$lock"
     trap 'rm -rf "$lock" 2>/dev/null || true' EXIT
@@ -351,7 +323,6 @@ cmd_status() {
     root="$(main_worktree)"
     load_config "$root"
     echo "main branch: $MAIN_BRANCH    main worktree: $root"
-    echo "policy: ready=$READY_MODE evidence=$EVIDENCE push=$( [[ "$REQUIRE_PUSH" == "1" ]] && echo on || echo off ) checks=$INTEGRATE_CHECKS"
     if [[ -n "${SLOTS:-}" ]]; then
         registered="$(slot_names "$root" | grep -c . || true)"
         if [[ "$registered" != 0 && "$registered" != "$SLOTS" ]]; then
@@ -380,7 +351,7 @@ cmd_status() {
 }
 
 cmd_ready() {
-    local root name dir branch dirty ahead note unpushed
+    local root name dir branch dirty ahead note
     root="$(main_worktree)"
     load_config "$root"
     name="${1:-}"
@@ -394,12 +365,6 @@ cmd_ready() {
     [[ "$branch" != "slot/$name" ]] || die "slot $name has no task branch, create one before marking ready"
     dirty="$(dirty_count "$dir")"
     [[ "$dirty" == 0 ]] || die "slot $name has $dirty uncommitted files, commit first"
-    if [[ "$REQUIRE_PUSH" == "1" ]]; then
-        git -C "$dir" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1 \
-            || die "slot $name branch $branch has no upstream, push it first"
-        unpushed="$(git -C "$dir" rev-list --count '@{u}..HEAD')"
-        [[ "$unpushed" == 0 ]] || die "slot $name has $unpushed unpushed commits, push before marking ready"
-    fi
     ahead="$(git -C "$dir" rev-list --count "$MAIN_BRANCH..HEAD")"
     [[ "$ahead" != 0 ]] || die "slot $name has no commits ahead of $MAIN_BRANCH"
     mkdir -p "$(state_dir "$root")"
@@ -413,10 +378,7 @@ EOF
     # Re-readying after a collection (feedback round) re-arms the slot.
     rm -f "$(collected_file "$root" "$name")"
     echo "pitbox: $name marked ready ($branch, $ahead commits ahead of $MAIN_BRANCH)"
-    echo "pitbox: worker side is done, never deploy or collect, a fresh conversation integrates"
-    if [[ "$READY_MODE" == "confirm" ]]; then
-        echo "pitbox: policy READY_MODE=confirm, mark ready only after the user confirmed the result"
-    fi
+    echo "pitbox: ready records the handoff; a separate session can collect when requested"
 }
 
 cmd_unready() {
@@ -457,9 +419,9 @@ cmd_deploy_guard() {
     done
     if [[ -n "$ready_list" ]]; then
         echo "pitbox: ready and uncollected:$ready_list"
-        die "deploy-guard: collect the ready slots or unready them, then deploy"
+        die "deploy-guard: ready slots await collection"
     fi
-    echo "pitbox: deploy-guard passed, no slot is waiting for collection"
+    echo "pitbox: no ready slots await collection"
 }
 
 cmd_collect() {
@@ -524,24 +486,10 @@ cmd_collect() {
             fi
         } > "$(collected_file "$root" "$name")"
         rm -f "$(marker_file "$root" "$name")" "$(conflict_file "$root" "$name")"
+        echo "pitbox: $name collected at $(git -C "$root" rev-parse --short HEAD)"
         if [[ "$conflicted" == 1 ]]; then
-            echo "pitbox: $name merged with manually resolved conflicts, the resolution code was never tested, run the repository's full checks before delivery"
+            echo "pitbox: $name had manually resolved conflicts"
         fi
-        case "$INTEGRATE_CHECKS" in
-            ci)
-                echo "pitbox: $name collected, push and let CI verify the merged main, then follow the repository's delivery rules and run: pitbox release $name"
-                ;;
-            full)
-                echo "pitbox: $name collected, run the full checks, follow the repository's delivery rules, then: pitbox release $name"
-                ;;
-            *)
-                if [[ "$conflicted" == 1 ]]; then
-                    echo "pitbox: $name collected, run the full checks first, follow the repository's delivery rules, then: pitbox release $name"
-                else
-                    echo "pitbox: $name collected cleanly, follow the repository's delivery rules, then: pitbox release $name"
-                fi
-                ;;
-        esac
     }
     if [[ "$target" == "ready" ]]; then
         for name in $(slot_names "$root"); do
@@ -589,42 +537,6 @@ cmd_release() {
     echo "pitbox: $name released, now on slot/$name at $MAIN_BRANCH"
 }
 
-cmd_ci() {
-    local root sha lines origin
-    root="$(main_worktree)"
-    load_config "$root"
-    origin="$(git -C "$root" remote get-url origin 2>/dev/null)" || origin=""
-    if [[ "$origin" != *github.com* ]]; then
-        echo "CI: none (no github.com origin), follow repository delivery rules"
-        exit 0
-    fi
-    if ! command -v gh >/dev/null 2>&1; then
-        echo "CI: none (gh cli not installed), follow repository delivery rules"
-        exit 0
-    fi
-    sha="$(git -C "$root" rev-parse HEAD)"
-    lines="$(cd "$root" && gh run list --branch "$MAIN_BRANCH" --limit 10 --json headSha,status,conclusion --jq 'map(select(.headSha == "'"$sha"'")) | if length == 0 then "none" else (map(if .status != "completed" then "pending" elif .conclusion == "success" then "green" else "red" end) | unique | join(",")) end' 2>&1)" || true
-    case "$lines" in
-        *red*)
-            echo "CI: red on $sha, fix forward or revert before delivery"
-            gh run list --branch "$MAIN_BRANCH" --limit 3 || true
-            exit 1
-            ;;
-        *pending*|none)
-            echo "CI: pending on $sha, re-run: pitbox ci"
-            exit 2
-            ;;
-        green)
-            echo "CI: green on $sha, follow repository delivery rules"
-            exit 0
-            ;;
-        *)
-            echo "CI: unknown, gh said: $(head -1 <<<"$lines")"
-            exit 2
-            ;;
-    esac
-}
-
 cmd_mcp() {
     local self dir server
     self="${BASH_SOURCE[0]}"
@@ -636,184 +548,7 @@ cmd_mcp() {
     die "mcp/server.mjs not found next to the CLI, clone the pitbox repository or run the server directly: node /path/to/pitbox/mcp/server.mjs"
 }
 
-cmd_guide() {
-    local root push_label="off"
-    root="$(main_worktree)"
-    load_config "$root"
-    if [[ "$REQUIRE_PUSH" == "1" ]]; then
-        push_label="on"
-    fi
-    cat <<EOF
-pitbox workflow guide
-
-policy: ready=$READY_MODE evidence=$EVIDENCE push=$push_label checks=$INTEGRATE_CHECKS
-Repository instructions decide which tasks use slots and whether integration includes a deploy. Add a slot-specific exception there when direct-work delivery rules conflict with slot work. pitbox never reads or edits AGENTS.md.
-
-Modes:
-- Follow the repository's routing rules. A task may use a slot even when it is the only task.
-- While slot work is active, reserve the main checkout for integration in a separate conversation.
-
-Slot agents:
-- Start with pitbox status, then pitbox claim [branch-name]. Claim books a free slot atomically and creates your task branch in it. Pass a slot number only if the user specified one.
-- Never pick a slot from status and create branches by hand, two agents can race for the same slot.
-- Verify inside the slot, commit only the task files, then run pitbox ready <slot> [notes]. ready records a handoff marker and never merges, deploys, or starts collection.
-EOF
-    if [[ "$READY_MODE" == "confirm" ]]; then
-        echo "- Commit your work as soon as it is verified. Run pitbox ready only after the user explicitly confirms the result."
-    else
-        echo "- Commit and mark ready as soon as your checks pass. Do not wait for user review or approval, the user reviews the ready slot and asks for collection when satisfied."
-    fi
-    case "$EVIDENCE" in
-        screenshot)
-            echo "- Prove visual work with a screenshot from the local preview, displayed in the result. A localhost link alone is not reviewable for a remote user."
-            ;;
-        requests)
-            echo "- Prove the change with a request and response example (curl or test output) in the result."
-            ;;
-        none)
-            echo "- Describe in text what you changed and how you verified it."
-            ;;
-        auto)
-            echo "- Prove the result: a screenshot from the local preview for UI work, a request and response example (curl or test output) for backend work, a short written description for logic or config. A localhost link alone is not reviewable for a remote user."
-            ;;
-    esac
-    cat <<'EOF'
-- If the user gives feedback on the same ready task before collection, stay in that slot, run pitbox unready <slot> so it stops advertising ready, commit the fix, and run ready again. For a new task after collection and release, check status and run pitbox claim without a slot number. A separate new task before collection also needs its own free slot.
-- Never merge into the main branch, never deploy, never touch other slots. Finish with ready: this conversation is a worker, never the integrator.
-
-Integrator (only on the user's explicit command, never just because a slot is ready):
-- Integrate only from a conversation with no slot work in it: a fresh session, another agent, or the user's own terminal. If the user asks to collect in a conversation that did the slot work, decline and point them here.
-- pitbox status, then collect ready slots: pitbox collect <slot|ready>. Collected slots are skipped until released.
-- collect refuses when the main worktree is off the main branch, when it is dirty, or when a slot changed after its marker.
-- If the repository requires a deploy, run pitbox deploy-guard first. It refuses while a slot is ready and uncollected.
-EOF
-    if [[ "$INTEGRATE_CHECKS" == "ci" ]]; then
-        echo "- Checks belong to CI: push the merged main and let CI verify it instead of running the full suite locally. Watch the push with pitbox ci, re-run it while pending, and follow repository delivery rules after it passes."
-        echo "- Releasing the slots right after the push is fine, the pool never waits for CI. If CI is red, fix forward or revert before new slots claim from main."
-    elif [[ "$INTEGRATE_CHECKS" == "full" ]]; then
-        echo "- Run the repository's full checks, then follow its delivery rules, including a deploy only if required."
-        echo "- Push the main branch, then pitbox release <slot> for each collected slot."
-    else
-        echo "- Clean merges need no local full run: the slot agents verified their branches and a clean merge adds no untested code. Push the main branch and release the slots right away, the pool never waits for CI."
-        echo "- After the push run pitbox ci and actually watch it. Re-run while pending and follow repository delivery rules after it passes."
-        echo "- When collect reports a slot merged with manually resolved conflicts, run the repository's full checks before delivery. The resolution code was never tested anywhere."
-    fi
-    cat <<'EOF'
-
-Rules:
-- The user's word always overrides the marker.
-- Slot agents verify, commit, and mark work ready per the policy above. Repository instructions must exempt them from any conflicting deploy-before-commit or review-before-commit rule. Direct work in the main checkout follows its normal delivery order.
-- A request to collect ready slots already authorizes collection. Do not ask for a second confirmation.
-- If collect is refused for any reason, report it, do not force.
-- Repository specifics: AGENTS.md in the repo root and the .pitbox/ hooks.
-EOF
-}
-
-detect_stack() {
-    local root="$1"
-    if [[ -f "$root/composer.json" ]]; then
-        echo "php-docker"
-    elif [[ -f "$root/bun.lock" || -f "$root/bun.lockb" || -f "$root/package.json" ]]; then
-        echo "bun"
-    fi
-}
-
-template_config() {
-    cat <<'EOF'
-# pitbox configuration
-# Main branch for slots; leave commented to autodetect (origin/HEAD, else current branch).
-# MAIN_BRANCH=main
-# Pool size used by setup without an argument (default 3). status warns when the
-# registered pool size differs.
-# SLOTS=3
-# Slot delivery settings. Add any needed slot exception to the repository's AGENTS.md.
-# READY_MODE=auto                          auto (default): commit and mark ready without waiting
-#                                          for review. confirm: commit always, mark ready only
-#                                          after the user confirms the result.
-# EVIDENCE=auto                            auto (default): screenshot for UI work, request and
-#                                          response example for backend work, text for logic.
-#                                          Other values: screenshot, requests, none.
-# REQUIRE_PUSH=1                           demand pushed task branches on ready
-# INTEGRATE_CHECKS=auto                    auto (default): run the full checks only after a merge
-#                                          with manually resolved conflicts, clean merges go
-#                                          straight to repository delivery. full: always run
-#                                          them before delivery. ci: push and let CI be the gate.
-EOF
-}
-
-template_bun() {
-    local root="$1"
-    template_config > "$root/.pitbox/config"
-    cat > "$root/.pitbox/setup.sh" <<'EOF'
-#!/usr/bin/env bash
-# Installs dependencies in a slot worktree (arg $1) using the shared bun cache.
-set -Eeuo pipefail
-cd -- "$1"
-bun install --frozen-lockfile
-EOF
-    cat > "$root/.pitbox/release.sh" <<'EOF'
-#!/usr/bin/env bash
-# Re-syncs a released slot (arg $1) with the merged main branch.
-# Add build-artifact cleanup for this project below if needed.
-set -Eeuo pipefail
-cd -- "$1"
-bun install --frozen-lockfile
-EOF
-}
-
-template_php_docker() {
-    local root="$1"
-    template_config > "$root/.pitbox/config"
-    cat > "$root/.pitbox/setup.sh" <<'EOF'
-#!/usr/bin/env bash
-# Prepares a slot worktree (arg $1) for a PHP + docker-compose project.
-# Per-slot compose isolation needs: COMPOSE_PROJECT_NAME=<slot>, unique host
-# ports, and no fixed container_name in compose files.
-set -Eeuo pipefail
-cd -- "$1"
-command -v composer >/dev/null 2>&1 && composer install --no-interaction --no-progress
-echo "pitbox: remember to set COMPOSE_PROJECT_NAME and unique ports before running compose in this slot"
-EOF
-    cat > "$root/.pitbox/release.sh" <<'EOF'
-#!/usr/bin/env bash
-# Resets a released slot (arg $1) for a PHP + docker-compose project.
-set -Eeuo pipefail
-cd -- "$1"
-# docker compose -p <slot-project> down -v   # uncomment once per-slot project names are set
-command -v composer >/dev/null 2>&1 && composer install --no-interaction --no-progress
-EOF
-}
-
-cmd_init() {
-    local root stack="" force=0
-    root="$(main_worktree)"
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --stack) stack="${2:-}"; shift 2 ;;
-            --force) force=1; shift ;;
-            *) die "init: unknown argument: $1" ;;
-        esac
-    done
-    if [[ -d "$root/.pitbox" && "$force" != 1 ]]; then
-        die ".pitbox already exists, use --force to overwrite"
-    fi
-    if [[ -z "$stack" ]]; then
-        stack="$(detect_stack "$root")"
-        [[ -n "$stack" ]] || die "cannot detect the stack, pass --stack bun or --stack php-docker"
-    fi
-    mkdir -p "$root/.pitbox"
-    case "$stack" in
-        bun) template_bun "$root" ;;
-        php-docker) template_php_docker "$root" ;;
-        *) die "unknown stack: $stack (supported: bun, php-docker)" ;;
-    esac
-    chmod +x "$root/.pitbox/setup.sh" "$root/.pitbox/release.sh"
-    echo "pitbox: wrote $stack templates to $root/.pitbox/ (review and commit .pitbox/)"
-}
-
 case "${1:-help}" in
-    init) shift; cmd_init "$@" ;;
-    guide) cmd_guide ;;
     setup) shift; cmd_setup "$@" ;;
     claim) shift; cmd_claim "$@" ;;
     status) cmd_status ;;
@@ -822,7 +557,6 @@ case "${1:-help}" in
     deploy-guard) cmd_deploy_guard ;;
     collect) shift; cmd_collect "$@" ;;
     release) shift; cmd_release "$@" ;;
-    ci) cmd_ci ;;
     mcp) cmd_mcp ;;
     version|--version|-V) echo "pitbox $VERSION" ;;
     help|--help|-h) usage ;;
