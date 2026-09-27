@@ -251,6 +251,16 @@ bash "$CLI" ready wt1 >/dev/null      # ready again after the fix
 expect "merging task/unready" collect ready
 bash "$CLI" release wt1 >/dev/null
 
+# deploy-guard passes on a working pool and refuses a ready and uncollected slot.
+expect "deploy-guard passed" deploy-guard
+bash "$CLI" claim wt1 task/guard >/dev/null
+git -C "$WT1DIR" commit --allow-empty -qm "guard work"
+bash "$CLI" ready wt1 >/dev/null
+expect_fail deploy-guard
+bash "$CLI" unready wt1 >/dev/null
+expect "deploy-guard passed" deploy-guard
+bash "$CLI" release wt1 >/dev/null
+
 # The guide is rendered from the policy config.
 printf 'READY_MODE=confirm\nEVIDENCE=none\nINTEGRATE_CHECKS=ci\n' >> "$T/.pitbox/config"
 guide_out="$(bash "$CLI" guide)"

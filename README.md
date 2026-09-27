@@ -67,6 +67,7 @@ Everyday commands:
 | `pitbox collect <slot\|ready>` | Merge the slot's task branch into the main branch with `--no-ff`, refuses a dirty or off-branch main checkout and slots changed after the marker, collected slots are skipped until released |
 | `pitbox release <slot>` | Reset the slot to main, delete the merged branch, run release hooks |
 | `pitbox ci` | CI status of the pushed main commit: green (exit 0), red (exit 1), pending (exit 2) |
+| `pitbox deploy-guard` | Exit nonzero while a slot is ready and uncollected, for deploy scripts to call as a gate |
 | `pitbox guide` | Print the workflow rules for this repository, rendered from `.pitbox/config` |
 
 ## MCP server

@@ -8,7 +8,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 
-const VERSION = "0.5.0";
+const VERSION = "0.6.0";
 const PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_TIMEOUT_MS = 120000;
 

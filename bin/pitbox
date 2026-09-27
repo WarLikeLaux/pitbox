@@ -15,7 +15,7 @@
 # Requires git 2.31+ (--path-format) and bash.
 set -Eeuo pipefail
 
-VERSION="0.5.0"
+VERSION="0.6.0"
 
 usage() {
     cat <<EOF
@@ -31,6 +31,7 @@ Usage (run anywhere inside the repository):
   pitbox collect <slot|ready>   Merge the slot branch into the main branch (--no-ff)
   pitbox release <slot>         Reset the slot to main, delete the merged branch, run release hooks
   pitbox ci                     CI status of the pushed main commit: green (exit 0), red (exit 1), pending (exit 2)
+  pitbox deploy-guard           Exit nonzero while a slot is ready and uncollected, for deploy scripts to call as a gate
   pitbox guide                  Print the workflow rules for this repository, rendered from .pitbox/config
   pitbox mcp                    Start the MCP server (needs the mcp/server.mjs from the repository)
   pitbox version                Print the version
@@ -441,6 +442,27 @@ cmd_unready() {
     fi
 }
 
+cmd_deploy_guard() {
+    local root name dir state ready_list=""
+    root="$(main_worktree)"
+    load_config "$root"
+    for name in $(slot_names "$root"); do
+        dir="$(slot_dir "$root" "$name")"
+        if [[ -n "$dir" && -d "$dir" ]]; then
+            import_legacy_marker "$root" "$name" "$dir"
+        fi
+        state="$(slot_state "$root" "$name" "$dir")"
+        if [[ "$state" == "ready" ]]; then
+            ready_list="$ready_list $name"
+        fi
+    done
+    if [[ -n "$ready_list" ]]; then
+        echo "pitbox: ready and uncollected:$ready_list"
+        die "deploy-guard: collect the ready slots or unready them, then deploy"
+    fi
+    echo "pitbox: deploy-guard passed, no slot is waiting for collection"
+}
+
 cmd_collect() {
     local root target name dir any=0
     root="$(main_worktree)"
@@ -664,6 +686,7 @@ Integrator (only on the user's explicit command, never just because a slot is re
 - Integrate only from a conversation with no slot work in it: a fresh session, another agent, or the user's own terminal. If the user asks to collect in a conversation that did the slot work, decline and point them here.
 - pitbox status, then collect ready slots: pitbox collect <slot|ready>. Collected slots are skipped until released.
 - collect refuses when the main worktree is off the main branch, when it is dirty, or when a slot changed after its marker.
+- Deploy only after a passing pitbox deploy-guard: it refuses while a slot is ready and uncollected. Collect the ready slots or unready them first.
 EOF
     if [[ "$INTEGRATE_CHECKS" == "ci" ]]; then
         echo "- Checks belong to CI: push the merged main and let CI verify it instead of running the full suite locally. Watch the push with pitbox ci, re-run it while it prints pending, deploy once it prints green or none, never on red."
@@ -798,6 +821,7 @@ case "${1:-help}" in
     status) cmd_status ;;
     ready) shift; cmd_ready "$@" ;;
     unready) shift; cmd_unready "$@" ;;
+    deploy-guard) cmd_deploy_guard ;;
     collect) shift; cmd_collect "$@" ;;
     release) shift; cmd_release "$@" ;;
     ci) cmd_ci ;;
