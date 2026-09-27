@@ -14,7 +14,7 @@
 # Requires git 2.31+ (--path-format) and bash.
 set -Eeuo pipefail
 
-VERSION="0.7.0"
+VERSION="0.7.1"
 
 usage() {
     cat <<EOF
@@ -28,7 +28,6 @@ Usage (run anywhere inside the repository):
   pitbox unready <slot>         Remove the readiness marker while handling feedback, the slot returns to work
   pitbox collect <slot|ready>   Merge the slot branch into the main branch (--no-ff)
   pitbox release <slot>         Reset the slot to main, delete the merged branch, run release hooks
-  pitbox deploy-guard           Exit nonzero while a slot is ready and uncollected, for deploy scripts to call as a gate
   pitbox mcp                    Start the MCP server (needs the mcp/server.mjs from the repository)
   pitbox version                Print the version
   pitbox help                   Show this help
@@ -378,7 +377,6 @@ EOF
     # Re-readying after a collection (feedback round) re-arms the slot.
     rm -f "$(collected_file "$root" "$name")"
     echo "pitbox: $name marked ready ($branch, $ahead commits ahead of $MAIN_BRANCH)"
-    echo "pitbox: ready records the handoff; a separate session can collect when requested"
 }
 
 cmd_unready() {
@@ -401,27 +399,6 @@ cmd_unready() {
     if [[ "$had_collected" == 1 ]]; then
         echo "pitbox: note: the task was already collected, run ready again to re-arm collection after the fix"
     fi
-}
-
-cmd_deploy_guard() {
-    local root name dir state ready_list=""
-    root="$(main_worktree)"
-    load_config "$root"
-    for name in $(slot_names "$root"); do
-        dir="$(slot_dir "$root" "$name")"
-        if [[ -n "$dir" && -d "$dir" ]]; then
-            import_legacy_marker "$root" "$name" "$dir"
-        fi
-        state="$(slot_state "$root" "$name" "$dir")"
-        if [[ "$state" == "ready" ]]; then
-            ready_list="$ready_list $name"
-        fi
-    done
-    if [[ -n "$ready_list" ]]; then
-        echo "pitbox: ready and uncollected:$ready_list"
-        die "deploy-guard: ready slots await collection"
-    fi
-    echo "pitbox: no ready slots await collection"
 }
 
 cmd_collect() {
@@ -460,7 +437,7 @@ cmd_collect() {
                 die "slot $name changed after being marked ready ($mcommit, now $cur), re-run pitbox ready $name"
             fi
         elif [[ -z "$marked" ]]; then
-            echo "pitbox: warning: $name has no readiness marker, collecting anyway (the user's word overrides the marker)"
+            echo "pitbox: warning: $name has no readiness marker, collecting named slot anyway"
         fi
         echo "pitbox: merging $branch from $name into $MAIN_BRANCH"
         if ! git -C "$root" merge --no-ff "$branch" -m "Merge $branch from $name"; then
@@ -554,7 +531,6 @@ case "${1:-help}" in
     status) cmd_status ;;
     ready) shift; cmd_ready "$@" ;;
     unready) shift; cmd_unready "$@" ;;
-    deploy-guard) cmd_deploy_guard ;;
     collect) shift; cmd_collect "$@" ;;
     release) shift; cmd_release "$@" ;;
     mcp) cmd_mcp ;;

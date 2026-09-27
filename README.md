@@ -18,12 +18,12 @@ integration          task branch        free
 
 1. A worker calls `pitbox status`, then `pitbox claim` without a slot number. Claim atomically picks a free worktree and prints its path.
 2. The worker follows the repository's rules, commits its task, and calls `pitbox ready wt1`. Ready records the branch and exact HEAD in the shared Git directory. It does not certify that tests passed.
-3. On the user's explicit request, a separate integrator session calls `pitbox collect ready` or names specific slots. Collect refuses a dirty or off-branch main checkout and a slot changed after ready.
-4. The integrator follows the repository's checks, CI, push, and deploy rules, then calls `pitbox release wt1`. Release resets the slot for another task.
+3. When the repository's workflow calls for integration, run `pitbox collect ready` or name specific slots. Collect refuses a dirty or off-branch main checkout and a slot changed after ready.
+4. Follow the repository's checks, CI, push, and deploy rules. Run `pitbox release wt1` when the slot is no longer needed. Release resets it for another task.
 
 Feedback before collection stays in the worker's slot. Call `pitbox unready wt1` while editing, then mark it ready again. If all slots are busy, wait for a release.
 
-Starting an agent in the main checkout does not make it the integrator. To route ordinary tasks into slots, add a short rule to the repository's `AGENTS.md` or the instruction file read by that agent:
+Pitbox does not assign agent roles. To route ordinary tasks into slots and reserve integration for a separate session, add rules like these to the repository's `AGENTS.md` or the instruction file read by that agent:
 
 ```md
 - For an ordinary coding task, run `pitbox status` and `pitbox claim` without a slot number. Work in the returned worktree.
@@ -63,9 +63,8 @@ Repositories can add `.pitbox/setup.sh` to prepare a new or resynced slot and `.
 | `pitbox unready <slot>` | Remove the ready marker while continuing work |
 | `pitbox collect <slot\|ready>` | Merge a slot or all marked slots into main |
 | `pitbox release <slot>` | Reset a slot to main and run its release hook |
-| `pitbox deploy-guard` | Optional state check: refuse while a ready slot awaits collection |
 
-Slot state is stored under `pitbox/slots/` in the common Git directory, outside the worktrees. The optional deploy guard checks only this state. It cannot identify whether the caller is a worker or an integrator. A repository may call it from its own deploy script.
+Slot state is stored under `pitbox/slots/` in the common Git directory, outside the worktrees.
 
 ## MCP and plugins
 

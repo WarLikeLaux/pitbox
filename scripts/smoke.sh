@@ -234,16 +234,6 @@ bash "$CLI" ready wt1 >/dev/null      # ready again after the fix
 expect "merging task/unready" collect ready
 bash "$CLI" release wt1 >/dev/null
 
-# deploy-guard passes on a working pool and refuses a ready and uncollected slot.
-expect "no ready slots await collection" deploy-guard
-bash "$CLI" claim wt1 task/guard >/dev/null
-git -C "$WT1DIR" commit --allow-empty -qm "guard work"
-bash "$CLI" ready wt1 >/dev/null
-expect_fail deploy-guard
-bash "$CLI" unready wt1 >/dev/null
-expect "no ready slots await collection" deploy-guard
-bash "$CLI" release wt1 >/dev/null
-
 # Only slot settings are accepted. The config is parsed as data, not executed.
 echo "READY_MODE=confirm" >> "$T/.pitbox/config"
 expect_fail status

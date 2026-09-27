@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 
-const VERSION = "0.7.0";
+const VERSION = "0.7.1";
 const PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_TIMEOUT_MS = 120000;
 
@@ -50,11 +50,9 @@ function runCli(args, repo) {
 function serverInstructions() {
     return "Pitbox manages reusable Git worktree slots and handoff markers. " +
         "Pass repo as the absolute path to the target repository or worktree on every call. " +
-        "Follow repository instructions for task routing, checks, review, CI, push, and deployment. " +
-        "A worker claims a slot, commits its work, and marks the slot ready. " +
-        "Only a separate session explicitly asked by the user collects ready slots. " +
-        "After repository delivery steps, the integrator releases collected slots. " +
-        "Pitbox does not run tests, check CI, or deploy.";
+        "Repository instructions decide when to use slots, collect branches, and release slots, " +
+        "as well as which checks, CI, push, and deployment steps to perform. " +
+        "Pitbox does not run those delivery steps.";
 }
 
 const TOOLS = [
@@ -118,7 +116,7 @@ const TOOLS = [
     },
     {
         name: "collect",
-        description: "Merge a slot branch into main when the user explicitly requests integration. Use slot=ready for only marked slots. A named unmarked slot produces a warning. Refuses dirty main or changed ready HEAD.",
+        description: "Merge a slot branch into main. Use slot=ready for only marked slots. A named unmarked slot produces a warning. Refuses dirty main or changed ready HEAD.",
         inputSchema: {
             type: "object",
             properties: { slot: { type: "string", description: "Slot name or the literal string ready" } },
@@ -129,7 +127,7 @@ const TOOLS = [
     },
     {
         name: "release",
-        description: "Return a slot to the pool after repository delivery or an intentional task abort. Resets the worktree, preserves unmerged branches, and runs its optional release hook.",
+        description: "Return a slot to the pool. Resets the worktree, preserves unmerged branches, and runs its optional release hook.",
         inputSchema: {
             type: "object",
             properties: { slot: { type: "string", description: "Slot name, e.g. wt1" } },

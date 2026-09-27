@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "pitbox",
-  "version": "0.7.0",
-  "description": "Handoff and integration protocol for parallel coding agents on a reusable worktree pool: MCP tools and one workflow skill for slot and integrator modes.",
+  "version": "0.7.1",
+  "description": "Reusable Git worktree slots and handoff markers for coding agents, with MCP tools and a workflow skill.",
   "author": { "name": "WarLikeLaux", "url": "https://github.com/WarLikeLaux" },
   "repository": "https://github.com/WarLikeLaux/pitbox",
   "license": "MIT",

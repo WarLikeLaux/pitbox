@@ -1,13 +1,13 @@
 {
   "name": "pitbox",
-  "description": "Handoff and integration protocol for parallel coding agents, packaged with one workflow skill and the pitbox MCP server for Claude Code",
+  "description": "Reusable Git worktree slots and handoff markers for coding agents, packaged with MCP tools and one workflow skill for Claude Code",
   "owner": { "name": "WarLikeLaux", "url": "https://github.com/WarLikeLaux" },
   "plugins": [
     {
       "name": "pitbox",
       "source": "./plugin",
-      "description": "pitbox slot and integrator workflow for Claude Code: MCP tools plus one workflow skill",
-      "version": "0.7.0",
+      "description": "pitbox worktree operations for Claude Code: MCP tools plus one workflow skill",
+      "version": "0.7.1",
       "author": { "name": "WarLikeLaux" },
       "license": "MIT",
       "keywords": ["mcp", "git", "worktree", "parallel", "agents"],
