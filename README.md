@@ -15,23 +15,32 @@ pitbox answers with three decisions. The worktrees are only the runtime. What pi
 
 - A fixed pool of two or three slots created once next to the checkout and reused forever. No spawn per task, no leftovers, dependency installs are paid once per slot.
 - A readiness marker. A slot agent finishes by marking the slot ready, the integrator collects only marked slots, and the user's word always overrides the marker. Slot state lives in the git directory under `pitbox/`, so nothing pollutes `git status` or gets committed by accident.
-- A per-repository delivery policy. `pitbox guide` renders the workflow rules from `.pitbox/config`: when agents mark ready, what proof of work they show, whether branches must be pushed. In slot mode this policy overrides the repository's AGENTS.md delivery rules, so agents stop freezing on a foreign "deploy before commit" line.
-- A strict split of roles. Slot agents never merge and never deploy, and the conversation that did slot work never integrates either: it ends at ready, and a fresh conversation does the collecting, deploying, pushing, and releasing. The integrator's local checks are policy: by default only after a merge with manually resolved conflicts, otherwise always, or never with CI as the gate.
+- Per-repository slot settings. `pitbox guide` renders `.pitbox/config`: when agents mark ready, what proof of work they show, and whether branches must be pushed. Repository instructions decide which tasks use slots and how delivery works.
+- A strict split of roles. Slot agents never merge or deploy. The conversation that did slot work ends at ready, and a fresh conversation collects, pushes, and releases. It deploys only if the repository requires it.
 
 ## How it works
 
 ```
 your-repo/            your-repo-wt1/       your-repo-wt2/       your-repo-wt3/
 main checkout         slot wt1             slot wt2             slot wt3
-integrator only       agent + task branch  agent + task branch  spare
+integration           agent + task branch  agent + task branch  spare
 ```
 
-- One task: work directly in the main checkout, no slots involved.
-- Two or three parallel tasks: one slot each, the main checkout belongs to the integrator.
+- Repository instructions can route even a single task to a slot. Starting an agent in the main checkout does not make it the integrator.
+- While slots are active, use the main checkout for integration in a separate conversation.
 - A slot agent books a slot with `pitbox claim` (it atomically reserves a free slot and creates the task branch), verifies inside the slot, commits the task files, then marks the branch ready.
-- The integrator collects ready slots, deploys, pushes, and releases the slots back to the pool. By default the full checks run only when a merge needed manual conflict resolution, `INTEGRATE_CHECKS=full|ci` changes that.
+- The integrator collects ready slots, follows the repository's delivery rules, and releases the slots back to the pool. `INTEGRATE_CHECKS=auto|full|ci` controls its local checks.
 
-In slot mode, pitbox defers a repository's deploy-before-commit rule to the integrator. By default (`READY_MODE=auto`) slot agents verify, commit, and mark work ready without waiting for review or approval. Repositories that want a confirmation step set `READY_MODE=confirm`. What agents show as proof of work is policy too (`EVIDENCE`): a screenshot from a local preview for UI work, a request and response example for backend work, plain text for logic. Ready does not merge or deploy anything. The user reviews the result and explicitly asks a fresh conversation to collect when satisfied, the worker does not collect its own work. The integrator collects ready slots on that one request and deploys once. Local checks on the merged main are policy too: by default they run only when a merge needed manual conflict resolution. Feedback after review is follow-up work. Direct work in the main checkout keeps the repository's normal delivery order. `pitbox guide` prints these rules rendered for the repository, from its own config, without touching `AGENTS.md`.
+By default (`READY_MODE=auto`) slot agents verify, commit, and mark work ready without waiting for review. Repositories that want confirmation before ready can set `READY_MODE=confirm`. The user explicitly asks a fresh conversation to collect when satisfied. `pitbox guide` prints the slot settings, and the repository's `AGENTS.md` should state any exception to direct-work rules such as deploy or review before commit. Pitbox never reads or edits `AGENTS.md`.
+
+If you start coding agents in the main checkout and want them to choose a free slot, add this rule to the repository's `AGENTS.md`:
+
+```md
+- For an ordinary coding task, run `pitbox status` and `pitbox claim` without a slot number. Work in the returned worktree.
+- A session that claimed a slot is its worker. Run relevant checks there, commit only task files, then run `pitbox ready`. Do not deploy, collect, release, or push the main branch.
+- Integrate only on the user's explicit request, in a separate session that did no slot work. Deploy only if this repository requires it.
+- Work explicitly assigned to the main checkout follows the repository's normal delivery policy.
+```
 
 You can keep using the same agent conversation. Feedback on a ready task before collection stays in its slot: the agent removes the marker with `unready` while fixing, so the slot stops advertising ready, and marks it ready again after. After collection and release, give the agent a new task. It checks status and claims a free slot without asking you for a slot number. A separate new task before collection needs another free slot.
 
@@ -113,7 +122,7 @@ Plugin hosts may start the MCP server inside a plugin cache. Every repository to
 | `setup` | Create the fixed slot pool, never spawn ad-hoc worktrees |
 | `ready` | Mark a slot ready, records the branch HEAD in the git directory, refuses dirty or stub-branch slots, never merge yourself |
 | `collect` | Integrator: merge a slot branch, or `ready` for all marked slots, refuses dirty or off-branch main checkouts, skips already collected slots |
-| `ci` | Integrator: CI status of the pushed main commit, green, red or pending, deploy on green |
+| `ci` | Integrator: CI status of the pushed main commit, green, red or pending |
 | `release` | Integrator: return a collected slot to the pool |
 | `init` | Write `.pitbox/` templates without editing `AGENTS.md` |
 
@@ -161,7 +170,7 @@ The update script requires a clean checkout at the published `origin/main` commi
 
 pitbox is global, repository specifics live in `.pitbox/` committed next to the code.
 
-- `.pitbox/config`: shell variables. `MAIN_BRANCH=<branch>` overrides autodetection (order: config, `origin/HEAD`, current branch). `SLOTS=<N>` sets the pool size a bare `setup` creates (default 3), `status` warns when the registered pool differs. `READY_MODE=auto|confirm` sets when slot agents mark ready: `auto` (default) commits and marks ready right after checks, `confirm` commits always but waits for the user's confirmation. `EVIDENCE=auto|screenshot|requests|none` sets what agents show as proof of work: `auto` (default) picks per task type. `REQUIRE_PUSH=1` makes `pitbox ready` demand a pushed branch, off by default. `INTEGRATE_CHECKS=auto|full|ci` sets when the integrator runs the repository's full checks: `auto` (default) only after a merge with manually resolved conflicts, since a clean merge adds no untested code and the slot agents verified their branches, clean merges push and release the slots right away, the integrator watches CI with `pitbox ci` and deploys once it reports green, `full` always before deploy, `ci` never locally, push and let CI be the gate, deploy on green.
+- `.pitbox/config`: shell variables. `MAIN_BRANCH=<branch>` overrides autodetection (order: config, `origin/HEAD`, current branch). `SLOTS=<N>` sets the pool size a bare `setup` creates (default 3), `status` warns when the registered pool differs. `READY_MODE=auto|confirm` controls when workers mark ready. `EVIDENCE=auto|screenshot|requests|none` controls how they show results. `REQUIRE_PUSH=1` requires a pushed task branch before ready. `INTEGRATE_CHECKS=auto|full|ci` runs full local checks after a manually resolved merge by default, after every merge with `full`, or in CI with `ci`. Repository instructions decide whether to deploy.
 - `.pitbox/setup.sh`: called with the slot directory as `$1` after a worktree is added and on release. The `bun` template runs `bun install --frozen-lockfile`, the `php-docker` template runs `composer install`.
 - `.pitbox/release.sh`: optional extra cleanup on release, falls back to `setup.sh`.
 

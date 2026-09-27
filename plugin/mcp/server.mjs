@@ -8,7 +8,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 
-const VERSION = "0.6.0";
+const VERSION = "0.6.1";
 const PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_TIMEOUT_MS = 120000;
 
@@ -48,7 +48,7 @@ function runCli(args, repo) {
     });
 }
 
-const MODE_RULE = "Workflow rule: one task = work in the main checkout, two or three parallel tasks = one slot each, the main checkout belongs to the integrator.";
+const MODE_RULE = "Follow the repository's task routing rules. A single task may use a slot. Slot workers never integrate.";
 
 // Plugin hosts can start this server inside their cache, so initialize cannot
 // infer the caller's repository from process.cwd().
@@ -57,11 +57,11 @@ function serverInstructions() {
         "Pass repo as the absolute path to the target repository or worktree on every call. " +
         "Lifecycle: an agent claims a slot, works in it, commits, and marks it ready; on user feedback in a ready " +
         "slot it calls unready first and ready again after the fix; only on an explicit user " +
-        "request the integrator collects ready slots, runs the checks the repository policy defines, deploys once, pushes, " +
-        "and releases the slots. A ready marker never merges or deploys. " +
+        "request the integrator collects ready slots, runs the checks the repository policy defines, pushes, " +
+        "and releases the slots. Deploy only if repository instructions require it. A ready marker never merges or deploys. " +
         "A conversation that worked in a slot is a worker and never integrates: it finishes with ready, and collection belongs to a fresh conversation. " +
-        "The workflow rules are repository-specific: call guide with the repo path and follow its output. " +
-        "If the repository has no .pitbox/config, run init, review and commit .pitbox/, then run setup.";
+        "Repository instructions decide task routing and delivery. Call guide with the repo path for the slot protocol. " +
+        "When the repository uses Pitbox but has no .pitbox/config, run init, review and commit .pitbox/, then run setup.";
 }
 
 const TOOLS = [
@@ -69,8 +69,8 @@ const TOOLS = [
         name: "guide",
         description:
             "Print the workflow rules for this repository, rendered from its .pitbox/config policy " +
-            "(ready mode, evidence, push requirement) with the priority over AGENTS.md delivery rules. " +
-            "Call it before slot work and follow it.",
+            "(ready mode, evidence, push requirement). Repository instructions govern task routing and delivery. " +
+            "Call guide before slot work.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
         args: () => ["guide"],
     },
@@ -87,7 +87,7 @@ const TOOLS = [
         description:
             "Create the fixed slot worktrees wt1..wtN next to the main checkout and register them. " +
             "Slots are a fixed pool: create them once and reuse them, never spawn ad-hoc worktrees. " +
-            "Call when a new parallel task starts and no free slot exists. " + MODE_RULE,
+            "Call when repository instructions route work to slots and no slots exist. " + MODE_RULE,
         inputSchema: {
             type: "object",
             properties: { count: { type: "integer", minimum: 1, maximum: 10, default: 3, description: "How many slots to create, default 3" } },
@@ -98,7 +98,7 @@ const TOOLS = [
     {
         name: "claim",
         description:
-            "Take a free slot for a new parallel task: pitbox books a slot atomically and creates your task " +
+            "Take a free slot for a new task: pitbox books a slot atomically and creates your task " +
             "branch in it. Omit slot to auto-pick the first free one. Never book a slot from status by hand, " +
             "two agents can race. Work in the returned path, never touch other slots. " + MODE_RULE,
         inputSchema: {
@@ -153,7 +153,7 @@ const TOOLS = [
             "branch with a --no-ff merge commit. Pass the literal string 'ready' to collect every ready slot; " +
             "already collected slots are skipped until released. If the merge stops with conflicts, resolve them " +
             "in the main checkout, commit, and run collect again. Refusals are final, do not force. After " +
-            "collecting, run the checks the repository policy defines (guide renders them), push, release each collected slot, and deploy at the policy-defined time. The pool never waits for CI.",
+            "collecting, run the required checks, follow repository delivery rules, and release each collected slot. Deploy only if the repository requires it.",
         inputSchema: {
             type: "object",
             properties: { slot: { type: "string", description: "Slot name, e.g. wt1, or the literal string 'ready'" } },
@@ -166,7 +166,7 @@ const TOOLS = [
         name: "ci",
         description:
             "Integrator tool: report the CI status of the pushed main commit, green, red, or pending. " +
-            "Run it after the push and actually watch it: deploy when it prints green or none, re-run it while pending, never deploy on red.",
+            "Run it after the push and watch it. Follow repository delivery rules after it passes.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
         args: () => ["ci"],
     },
